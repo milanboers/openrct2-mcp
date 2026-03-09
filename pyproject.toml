@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openrct2-ridecreation-mcp"
+version = "0.1.0"
+description = "MCP server for roller coaster creation in OpenRCT2"
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=0.1.0",
+    "Pillow>=10.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "fastmcp>=0.1.0",
+]
+
+[project.scripts]
+openrct2-ride-mcp = "src.mcp_server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
