@@ -2,6 +2,8 @@
 
 An MCP server for creating roller coasters in OpenRCT2 using a stateless, coordinate-free approach. The server returns authoritative state including height maps and visual top-down representations.
 
+![movie-1080p-final](https://github.com/user-attachments/assets/77bf232a-91c0-4205-a3c2-5c0bb3af9896)
+
 ## Tools
 - `create_ride`: Create a new coaster and place the first station piece.
 - `place_track_segment`: Add a track segment (validates against game rules).
