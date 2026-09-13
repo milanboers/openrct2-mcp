@@ -14,8 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0.0",
-    "fastmcp>=0.1.0",
+    "pytest>=9.0.0",
 ]
 
 [project.scripts]

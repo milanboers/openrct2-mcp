@@ -1,9 +1,9 @@
 """TCP client for communicating with OpenRCT2 Ride Creation API using persistent connections."""
 
-import socket
+import io
 import json
 import logging
-import io
+import socket
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
