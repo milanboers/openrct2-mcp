@@ -127,6 +127,7 @@ Other stdio MCP clients work the same way — point them at `uv --directory /pat
 The skill (`skills/build-coaster/SKILL.md`) tells the agent how to build a valid coaster: the station sequence, which transition pieces to use, and to only ever pick a track type from the `valid_pieces` list. Copy it into your client's skill folder:
 
 - **Claude Code:** `.claude/skills/build-coaster/SKILL.md` inside your workspace.
+- **pi:** `.pi/skills/build-coaster/SKILL.md` inside your workspace (or `~/.pi/agent/skills/build-coaster/` for all projects).
 - **opencode:** `.opencode/skills/build-coaster/SKILL.md` inside your workspace.
 
 ## Using it
