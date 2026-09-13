@@ -605,10 +605,16 @@ def delete_all_rides() -> dict[str, Any]:
 @mcp.tool()
 def list_all_rides() -> list[dict[str, Any]]:
     """
-    List all rides.
+    List all rides. Each ride includes its id, name, numeric type, and a
+    human-readable ride_type_name (e.g. "Wooden Roller Coaster").
     """
     try:
-        return api_client.list_all_rides()
+        rides = api_client.list_all_rides()
+        for ride in rides:
+            ride["ride_type_name"] = RIDE_TYPES.get(
+                ride.get("type"), f"Unknown({ride.get('type')})"
+            )
+        return rides
     except APIError as e:
         logger.error(f"API error listing rides: {e}")
         return []

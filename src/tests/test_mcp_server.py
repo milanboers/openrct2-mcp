@@ -163,9 +163,14 @@ class TestCoasterTools:
 
     def test_list_all_rides(self) -> None:
         with patch.object(api_client, 'list_all_rides') as mock_list:
-            mock_list.return_value = [{"id": 1}]
+            mock_list.return_value = [{"id": 1, "name": "Coaster", "type": 52}]
             result: list[dict[str, Any]] = list_all_rides()
             assert len(result) == 1
+            # id/type are preserved (they're used as tool inputs) and the
+            # human-readable name is added.
+            assert result[0]["id"] == 1
+            assert result[0]["type"] == 52
+            assert result[0]["ride_type_name"] == "Wooden Roller Coaster"
 
     def test_circuit_complete_reported_from_plugin(self) -> None:
         """The plugin's isCircuitComplete flag must flow through to the state."""
