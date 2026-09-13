@@ -18,7 +18,7 @@ dev = [
 ]
 
 [project.scripts]
-openrct2-ride-mcp = "src.mcp_server:main"
+openrct2-mcp = "src.mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]

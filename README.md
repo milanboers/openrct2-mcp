@@ -10,7 +10,7 @@ Three pieces talk to each other:
 
 1. **In-game plugin** (`ridecreation-api.js`) — runs inside OpenRCT2 and opens a small TCP server on port `8080`. It places track, validates every piece against the game rules, and reports the ride state.
 2. **MCP server** (Python, this repo) — a plain stdio MCP server. Its tools forward to the game over that TCP connection.
-3. **Your AI client** — Claude Code, pi (with pi-mcp-adapter), opencode, or any stdio MCP client. It runs the MCP server, loads the `build-coaster` skill, and drives the whole thing.
+3. **Your AI client** — Claude Code, Codex, pi (with pi-mcp-adapter), opencode, or any stdio MCP client. It runs the MCP server, loads the `build-coaster` skill, and drives the whole thing.
 
 ## Tools
 
@@ -28,7 +28,7 @@ Three pieces talk to each other:
 
 - **OpenRCT2** (in-game plugins are enabled by default)
 - **uv** — see [astral.sh/uv](https://docs.astral.sh/uv/)
-- an MCP-capable AI client (Claude Code, pi with pi-mcp-adapter, opencode, ...)
+- an MCP-capable AI client (Claude Code, Codex, pi with pi-mcp-adapter, opencode, ...)
 
 ## Setup
 
@@ -64,7 +64,7 @@ uv sync
 To check it works:
 
 ```
-uv run openrct2-ride-mcp
+uv run openrct2-mcp
 ```
 
 It just sits there until a client connects; stop it with Ctrl+C.
@@ -80,9 +80,9 @@ Create a workspace folder (e.g. `~/openrct2/`), and inside it a `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "openrct2-ride-mcp": {
+    "openrct2-mcp": {
       "command": "uv",
-      "args": ["--directory", "/path/to/openrct2-mcp", "run", "openrct2-ride-mcp"],
+      "args": ["--directory", "/path/to/openrct2-mcp", "run", "openrct2-mcp"],
       "type": "stdio"
     }
   }
@@ -90,6 +90,18 @@ Create a workspace folder (e.g. `~/openrct2/`), and inside it a `.mcp.json`:
 ```
 
 Then run `claude` from that folder.
+
+#### Codex
+
+In the same workspace folder, create a `.codex/config.toml`:
+
+```toml
+[mcp_servers.openrct2-mcp]
+command = "uv"
+args = ["--directory", "/path/to/openrct2-mcp", "run", "openrct2-mcp"]
+```
+
+Then run `codex` from that folder. Codex only loads `.codex/` project config after you trust the project — approve the prompt when it appears. (Or add it to your user config instead with `codex mcp add openrct2-mcp -- uv --directory /path/to/openrct2-mcp run openrct2-mcp`.)
 
 #### pi (with pi-mcp-adapter)
 
@@ -109,9 +121,9 @@ In the same workspace folder, create an `opencode.json`:
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "openrct2-ride-mcp": {
+    "openrct2-mcp": {
       "type": "local",
-      "command": ["uv", "--directory", "/path/to/openrct2-mcp", "run", "openrct2-ride-mcp"],
+      "command": ["uv", "--directory", "/path/to/openrct2-mcp", "run", "openrct2-mcp"],
       "enabled": true
     }
   }
@@ -120,13 +132,14 @@ In the same workspace folder, create an `opencode.json`:
 
 Then start opencode from that folder (and restart it after saving the config).
 
-Other stdio MCP clients work the same way — point them at `uv --directory /path/to/openrct2-mcp run openrct2-ride-mcp`.
+Other stdio MCP clients work the same way — point them at `uv --directory /path/to/openrct2-mcp run openrct2-mcp`.
 
 ### 5. Install the skill
 
 The skill (`skills/build-coaster/SKILL.md`) tells the agent how to build a valid coaster: the station sequence, which transition pieces to use, and to only ever pick a track type from the `valid_pieces` list. Copy it into your client's skill folder:
 
 - **Claude Code:** `.claude/skills/build-coaster/SKILL.md` inside your workspace.
+- **Codex:** `.agents/skills/build-coaster/SKILL.md` inside your workspace (or `~/.agents/skills/build-coaster/` for all projects).
 - **pi:** `.pi/skills/build-coaster/SKILL.md` inside your workspace (or `~/.pi/agent/skills/build-coaster/` for all projects).
 - **opencode:** `.opencode/skills/build-coaster/SKILL.md` inside your workspace.
 
