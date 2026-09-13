@@ -111,9 +111,6 @@ function main() {
         }
     };
 
-    // Track state storage (ride ID -> state)
-    var rideTrackStates = {};
-
     /**
      * Get the track state category for validation rules
      * Based on actual TrackElemType values from OpenRCT2
@@ -195,6 +192,113 @@ function main() {
                 console.log("Unknown track type:", trackType, "- defaulting to flat");
                 return "flat"; // Default to flat for unknown pieces
         }
+    }
+
+    /**
+     * Collect all track elements belonging to a ride by scanning the map.
+     */
+    function getRideTrackElements(rideId) {
+        var elements = [];
+        for (var x = 0; x < map.size.x; x++) {
+            for (var y = 0; y < map.size.y; y++) {
+                var tile = map.getTile(x, y);
+                if (!tile) continue;
+                for (var i = 0; i < tile.numElements; i++) {
+                    var elem = tile.elements[i];
+                    if (elem.type === 'track' && elem.ride === rideId) {
+                        elements.push({ tileX: x, tileY: y, elementIndex: i, element: elem });
+                    }
+                }
+            }
+        }
+        return elements;
+    }
+
+    /**
+     * Reconstruct a ride's track state from the game itself, which is the source
+     * of truth. Walks the track with the track iterator from the station start,
+     * so it works for any station length or position, and stays correct across
+     * scenario reloads or if the track is edited in-game.
+     *
+     * Returns { history, isComplete, elements } or null if the ride has no track.
+     * Each history entry has the same shape the MCP server expects (x, y, z,
+     * direction, trackType, nextX, nextY, nextZ, nextDirection), plus an exact
+     * pixelZ used for removal.
+     */
+    function getRideTrackState(rideId) {
+        var elements = getRideTrackElements(rideId);
+        if (elements.length === 0) {
+            return null;
+        }
+
+        // Start the walk at the BeginStation if there is one, else the first element.
+        var start = elements[0];
+        for (var i = 0; i < elements.length; i++) {
+            if (elements[i].element.trackType === 2) { // BeginStation
+                start = elements[i];
+                break;
+            }
+        }
+
+        var iterator = map.getTrackIterator({ x: start.tileX * 32, y: start.tileY * 32 }, start.elementIndex);
+        if (!iterator) {
+            return null;
+        }
+
+        // Walk backwards to the true start of the track (handles tracks without
+        // a BeginStation, e.g. built manually in-game). For a closed circuit this
+        // walks a full loop and lands back on the start element.
+        var backGuard = 0;
+        while (backGuard++ < elements.length) {
+            if (!iterator.previous()) break;
+        }
+
+        var startTileX = Math.round(iterator.position.x / 32);
+        var startTileY = Math.round(iterator.position.y / 32);
+        var startTileZ = Math.round(iterator.position.z / 8);
+
+        var history = [];
+        var isComplete = false;
+        var guard = 0;
+
+        while (guard++ < 10000) {
+            var pos = iterator.position;
+            var seg = iterator.segment;
+
+            var entry = {
+                x: Math.round(pos.x / 32),
+                y: Math.round(pos.y / 32),
+                z: Math.round(pos.z / 8),
+                pixelZ: Math.round(pos.z),
+                direction: pos.direction,
+                trackType: seg ? seg.type : 0
+            };
+
+            var nextPos = iterator.nextPosition;
+            if (nextPos) {
+                entry.nextX = Math.round(nextPos.x / 32);
+                entry.nextY = Math.round(nextPos.y / 32);
+                entry.nextZ = Math.round(nextPos.z / 8);
+                entry.nextDirection = nextPos.direction;
+            }
+
+            history.push(entry);
+
+            // Advance to the next piece.
+            if (!iterator.next()) {
+                break; // Open end: the track is not a closed circuit.
+            }
+
+            // If we came back to the start element, the circuit is closed.
+            if (Math.round(iterator.position.x / 32) === startTileX &&
+                Math.round(iterator.position.y / 32) === startTileY &&
+                Math.round(iterator.position.z / 8) === startTileZ) {
+                isComplete = true;
+                break;
+            }
+        }
+
+        return { history: history, isComplete: isComplete, elements: elements };
     }
 
     /**
@@ -329,10 +433,6 @@ function main() {
                     }, function (result) {
                         if (!result || (result.error && result.error !== "")) {
                             console.log("Error demolishing ride " + ride.id + ": " + (result && result.error ? result.error : "Unknown error"));
-                        } else {
-                            // Clear the ride state when ride is deleted
-                            delete rideTrackStates[ride.id];
-                            console.log("Cleared track state for deleted ride " + ride.id);
                         }
                         deleteNext();
                     });
@@ -584,30 +684,11 @@ function main() {
 
                         console.log("Converted to tile coords - X:", nextTileX, "Y:", nextTileY, "Z:", nextTileZ, "Dir:", nextDirection);
 
-                        // Check if circuit is complete.
-                        // The loop closes where the layout left the station: the first
-                        // non-station piece that was placed. Derive it from the actual
-                        // history so any station length or position works, instead of
-                        // assuming the default 6-piece station at (67, 66, 14).
-                        var layoutStart = null;
-                        var trackState = rideTrackStates[request.params.ride];
-                        if (trackState) {
-                            for (var hi = 0; hi < trackState.history.length; hi++) {
-                                var histPiece = trackState.history[hi];
-                                if (histPiece.trackType !== 1 && histPiece.trackType !== 2 && histPiece.trackType !== 3) {
-                                    layoutStart = histPiece;
-                                    break;
-                                }
-                            }
-                        }
-
-                        var isCircuitComplete = (
-                            layoutStart !== null &&
-                            nextTileX === layoutStart.x &&
-                            nextTileY === layoutStart.y &&
-                            nextTileZ === layoutStart.z &&
-                            nextDirection === layoutStart.direction
-                        );
+                        // Check if circuit is complete by reading the track back from
+                        // the game. The loop is closed when the track returns to its
+                        // start element; this works for any station length or position.
+                        var placedState = getRideTrackState(request.params.ride);
+                        var isCircuitComplete = placedState !== null && placedState.isComplete;
 
                         var circuitMessage = isCircuitComplete ?
                             "Circuit complete! Track connects back to station - ready for testing!" :
@@ -616,30 +697,6 @@ function main() {
                         if (isCircuitComplete) {
                             console.log("CIRCUIT COMPLETE! Track successfully connects back to station.");
                         }
-
-                        // Update ride track state for validation and history
-                        rideTrackStates[request.params.ride] = rideTrackStates[request.params.ride] || { history: [] };
-
-                        // Add this piece to history for undo functionality
-                        rideTrackStates[request.params.ride].history.push({
-                            // Position where this piece was placed
-                            x: request.params.tileCoordinateX,
-                            y: request.params.tileCoordinateY,
-                            z: request.params.tileCoordinateZ,
-                            direction: request.params.direction,
-                            trackType: request.params.trackType,
-                            // Position where the next piece can connect (for restoring state after undo)
-                            nextX: nextTileX,
-                            nextY: nextTileY,
-                            nextZ: nextTileZ,
-                            nextDirection: nextDirection,
-                            // Element index for removal
-                            elementIndex: elem_index,
-                            placedTileX: placedTileX,
-                            placedTileY: placedTileY
-                        });
-
-                        rideTrackStates[request.params.ride].isComplete = isCircuitComplete;
 
                         var responsePayload = {
                             message: "Track piece placed for ride " + request.params.ride,
@@ -678,10 +735,10 @@ function main() {
                 }
 
                 var rideId = request.params.rideId;
-                var state = rideTrackStates[rideId];
+                var state = getRideTrackState(rideId);
 
-                if (!state || !state.history || state.history.length === 0) {
-                    // No track placed yet or unknown state - allow only station and flat pieces to start
+                if (!state || state.history.length === 0) {
+                    // No track placed yet - allow only station and flat pieces to start
                     callback({
                         success: true,
                         payload: {
@@ -951,9 +1008,9 @@ function main() {
                 }
 
                 var rideId = request.params.rideId;
-                var state = rideTrackStates[rideId];
+                var state = getRideTrackState(rideId);
 
-                if (!state || !state.history || state.history.length === 0) {
+                if (!state || state.history.length === 0) {
                     callback({
                         success: false,
                         error: "No track pieces to delete for ride " + rideId
@@ -961,17 +1018,33 @@ function main() {
                     return;
                 }
 
-                // Get the last placed piece
+                // The last piece in the walk is the one most recently placed.
                 var lastPiece = state.history[state.history.length - 1];
 
-                console.log("Attempting to remove track piece at tile:", lastPiece.placedTileX, lastPiece.placedTileY,
-                            "element index:", lastPiece.elementIndex, "trackType:", lastPiece.trackType);
+                // Find the actual tile element so we can remove it by its exact baseZ
+                // (the game matches on baseZ, which differs from the tile z for downward
+                // pieces).
+                var removeElement = null;
+                for (var ri = 0; ri < state.elements.length; ri++) {
+                    var cand = state.elements[ri];
+                    if (cand.tileX === lastPiece.x &&
+                        cand.tileY === lastPiece.y &&
+                        cand.element.trackType === lastPiece.trackType &&
+                        cand.element.direction === lastPiece.direction) {
+                        removeElement = cand.element;
+                        break;
+                    }
+                }
+                var removeZ = removeElement ? removeElement.baseZ : lastPiece.pixelZ;
+
+                console.log("Attempting to remove track piece at tile:", lastPiece.x, lastPiece.y,
+                            "trackType:", lastPiece.trackType, "z:", removeZ);
 
                 // Use trackremove action to delete the track piece
                 context.executeAction("trackremove", {
-                    x: lastPiece.placedTileX * 32,  // Convert tile to pixel coordinates
-                    y: lastPiece.placedTileY * 32,
-                    z: lastPiece.z * 8,  // Convert height units to pixel coordinates
+                    x: lastPiece.x * 32,  // Convert tile to pixel coordinates
+                    y: lastPiece.y * 32,
+                    z: removeZ,  // Exact baseZ of the element (pixel units)
                     direction: lastPiece.direction,
                     trackType: lastPiece.trackType,
                     sequence: 0  // Sequence number for multi-tile pieces (0 for single tile)
@@ -985,20 +1058,17 @@ function main() {
                     } else {
                         console.log("Successfully removed track piece");
 
-                        // Remove the piece from history
-                        state.history.pop();
-                        // Removing a piece reopens the circuit (the last piece was the connector)
-                        state.isComplete = false;
+                        // Re-derive state from the game for the response.
+                        var newState = getRideTrackState(rideId);
 
-                        // Prepare response with the new current position
                         var responsePayload = {
                             message: "Track piece removed from ride " + rideId,
-                            piecesRemaining: state.history.length
+                            piecesRemaining: newState ? newState.history.length : 0
                         };
 
                         // If there are still pieces, provide the new endpoint for building
-                        if (state.history.length > 0) {
-                            var newLastPiece = state.history[state.history.length - 1];
+                        if (newState && newState.history.length > 0) {
+                            var newLastPiece = newState.history[newState.history.length - 1];
                             responsePayload.nextEndpoint = {
                                 x: newLastPiece.nextX,
                                 y: newLastPiece.nextY,
@@ -1044,11 +1114,6 @@ function main() {
                 };
                 context.executeAction("ridecreate", rideCreateArgs, function (result) {
                     if (result && typeof result.ride === "number") {
-                        // Initialize track state for new ride (always reset in case of ID reuse)
-                        rideTrackStates[result.ride] = {
-                            history: []  // Array to store all placed track pieces for undo functionality
-                        };
-                        console.log("Initialized fresh track state for ride " + result.ride);
                         callback({
                             success: true,
                             payload: { rideId: result.ride }
@@ -1063,11 +1128,11 @@ function main() {
                 break;
 
             case "getTrackHistory":
-                var state = rideTrackStates[request.params.rideId] || { history: [] };
+                var state = getRideTrackState(request.params.rideId);
                 callback({
                     success: true,
                     payload: {
-                        history: state.history
+                        history: state ? state.history : []
                     }
                 });
                 break;
