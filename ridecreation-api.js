@@ -584,19 +584,29 @@ function main() {
 
                         console.log("Converted to tile coords - X:", nextTileX, "Y:", nextTileY, "Z:", nextTileZ, "Dir:", nextDirection);
 
-                        // Check if circuit is complete
-                        // We start stations at (67, 66, 14) and place 6 station pieces going left (direction 0 = west)
-                        // So the track needs to return to (61, 66, 14) with direction 0 to connect to the last station piece
-                        var startStationX = 61; // After 6 station pieces from 67 to 62
-                        var startStationY = 66;
-                        var startStationZ = 14;
-                        var startDirection = 0;
+                        // Check if circuit is complete.
+                        // The loop closes where the layout left the station: the first
+                        // non-station piece that was placed. Derive it from the actual
+                        // history so any station length or position works, instead of
+                        // assuming the default 6-piece station at (67, 66, 14).
+                        var layoutStart = null;
+                        var trackState = rideTrackStates[request.params.ride];
+                        if (trackState) {
+                            for (var hi = 0; hi < trackState.history.length; hi++) {
+                                var histPiece = trackState.history[hi];
+                                if (histPiece.trackType !== 1 && histPiece.trackType !== 2 && histPiece.trackType !== 3) {
+                                    layoutStart = histPiece;
+                                    break;
+                                }
+                            }
+                        }
 
                         var isCircuitComplete = (
-                            nextTileX === startStationX &&
-                            nextTileY === startStationY &&
-                            nextTileZ === startStationZ &&
-                            nextDirection === startDirection
+                            layoutStart !== null &&
+                            nextTileX === layoutStart.x &&
+                            nextTileY === layoutStart.y &&
+                            nextTileZ === layoutStart.z &&
+                            nextDirection === layoutStart.direction
                         );
 
                         var circuitMessage = isCircuitComplete ?
