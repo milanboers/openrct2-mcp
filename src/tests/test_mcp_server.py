@@ -45,8 +45,9 @@ class TestCreateRide:
             assert result[0]["ride_type"] == 52
             assert len(result[0]["pieces"]) == 1
             assert result[0]["pieces"][0]["trackType"] == "BeginStation"
-            assert "Flat" in result[0]["valid_pieces"]
-            assert "FlatToUp25" in result[0]["valid_pieces"]
+            valid_names = [p["name"] for p in result[0]["valid_pieces"]]
+            assert "Flat" in valid_names
+            assert "FlatToUp25" in valid_names
             assert "height_map" in result[0]
             mock_create.assert_called_once()
             mock_place.assert_called_once()

@@ -302,6 +302,103 @@ function main() {
     }
 
     /**
+     * Build a lookup of track segment geometry from the game's own catalog.
+     * This is static game configuration (not ride state), so it's cached.
+     */
+    var segmentGeometryCache = null;
+    function getSegmentGeometry() {
+        if (segmentGeometryCache === null) {
+            segmentGeometryCache = {};
+            var segs = context.getAllTrackSegments();
+            for (var si = 0; si < segs.length; si++) {
+                var s = segs[si];
+                if (!s || typeof s.type !== "number") continue;
+                var clearX = 0, clearY = 0, clearZ = 0;
+                if (s.elements && s.elements.length > 0) {
+                    clearX = s.elements[0].x || 0;
+                    clearY = s.elements[0].y || 0;
+                    clearZ = s.elements[0].z || 0;
+                }
+                segmentGeometryCache[s.type] = {
+                    endX: s.endX || 0,
+                    endY: s.endY || 0,
+                    endZ: s.endZ || 0,
+                    endDirection: (s.endDirection || 0) & 3,
+                    clearX: clearX,
+                    clearY: clearY,
+                    clearZ: clearZ
+                };
+            }
+        }
+        return segmentGeometryCache;
+    }
+
+    // The game's cardinal direction deltas (32 px per tile).
+    // 0 = west, 1 = +y, 2 = east, 3 = -y.
+    var DIRECTION_DELTAS = [
+        { x: -32, y: 0 },
+        { x: 0, y: 32 },
+        { x: 32, y: 0 },
+        { x: 0, y: -32 }
+    ];
+
+    // Rotate an (x, y) offset by a cardinal direction, matching the game's CoordsXY.rotate.
+    function rotateOffset(x, y, dir) {
+        switch (dir & 3) {
+            case 0: return { x: x, y: y };
+            case 1: return { x: y, y: -x };
+            case 2: return { x: -x, y: -y };
+            default: return { x: -y, y: x };
+        }
+    }
+
+    /**
+     * Predict where a track piece of the given type lands when placed at tile p
+     * heading in direction d. Mirrors the game's own trackBlockGetNext math
+     * using the game's per-piece descriptors, so no hardcoded geometry is needed.
+     * p.z is in tile height units; the result is tile coordinates.
+     */
+    function predictEndpoint(p, d, trackType) {
+        var geo = getSegmentGeometry()[trackType];
+        if (!geo) return null;
+
+        var end = rotateOffset(geo.endX, geo.endY, d);
+        var clear = rotateOffset(geo.clearX, geo.clearY, (d + 2) & 3);
+
+        var endBlockX = p.x * 32 + end.x + clear.x;
+        var endBlockY = p.y * 32 + end.y + clear.y;
+
+        // Placement applies the z adjustment (down pieces), so the piece's baseZ
+        // is not p.z*8; the game then computes the exit z as baseZ - clearZ + endZ.
+        var baseZ = p.z * 8 + getZAdjustment(trackType);
+        var exitZ = baseZ - geo.clearZ + geo.endZ;
+
+        var newDir = (d + geo.endDirection) & 3;
+        var delta = DIRECTION_DELTAS[newDir];
+
+        return {
+            x: Math.round((endBlockX + delta.x) / 32),
+            y: Math.round((endBlockY + delta.y) / 32),
+            z: Math.round(exitZ / 8),
+            direction: newDir
+        };
+    }
+
+    /**
+     * Predict the landing tile for every valid piece from a given position.
+     * Returns a map keyed by track type.
+     */
+    function buildValidPieceEndpoints(position, validPieces) {
+        var endpoints = {};
+        if (!position) return endpoints;
+        for (var vi = 0; vi < validPieces.length; vi++) {
+            var ep = predictEndpoint(position, position.direction, validPieces[vi]);
+            if (ep) endpoints[validPieces[vi]] = ep;
+        }
+        return endpoints;
+    }
+
+    /**
      * Calculate Z adjustment for track placement.
      * In OpenRCT2, 'z' for trackplace refers to the baseZ (lowest point).
      * For downward pieces, this is the exit height.
@@ -684,6 +781,20 @@ function main() {
 
                         console.log("Converted to tile coords - X:", nextTileX, "Y:", nextTileY, "Z:", nextTileZ, "Dir:", nextDirection);
 
+                        // Self-verify the endpoint prediction against the game's actual
+                        // result, so a geometry error surfaces immediately in-game.
+                        var predictedEnd = predictEndpoint(
+                            { x: request.params.tileCoordinateX, y: request.params.tileCoordinateY, z: request.params.tileCoordinateZ },
+                            request.params.direction,
+                            request.params.trackType
+                        );
+                        if (predictedEnd && (predictedEnd.x !== nextTileX || predictedEnd.y !== nextTileY ||
+                            predictedEnd.z !== nextTileZ || predictedEnd.direction !== nextDirection)) {
+                            console.log("WARNING: endpoint prediction mismatch for trackType", request.params.trackType,
+                                "- predicted (" + predictedEnd.x + "," + predictedEnd.y + "," + predictedEnd.z + ",dir " + predictedEnd.direction +
+                                ") actual (" + nextTileX + "," + nextTileY + "," + nextTileZ + ",dir " + nextDirection + ")");
+                        }
+
                         // Check if circuit is complete by reading the track back from
                         // the game. The loop is closed when the track returns to its
                         // start element; this works for any station length or position.
@@ -761,19 +872,21 @@ function main() {
                 if (!rules) {
                     // No specific rules - allow safe flat pieces only
                     console.log("Warning: No rules for state category:", stateCategory, "track type:", lastPiece.trackType);
+                    var fallbackPosition = {
+                        x: lastPiece.nextX,
+                        y: lastPiece.nextY,
+                        z: lastPiece.nextZ,
+                        direction: lastPiece.nextDirection
+                    };
                     callback({
                         success: true,
                         payload: {
                             validPieces: [0, 16, 17, 42, 43], // Only flat and turns as safe fallback
+                            validPieceEndpoints: buildValidPieceEndpoints(fallbackPosition, [0, 16, 17, 42, 43]),
                             lastTrackType: lastPiece.trackType,
                             stateCategory: stateCategory,
                             isCircuitComplete: state.isComplete === true,
-                            position: {
-                                x: lastPiece.nextX,
-                                y: lastPiece.nextY,
-                                z: lastPiece.nextZ,
-                                direction: lastPiece.nextDirection
-                            }
+                            position: fallbackPosition
                         }
                     });
                     return;
@@ -782,19 +895,22 @@ function main() {
                 // Return the allowed pieces directly (allowed and forbidden lists are mutually exclusive by design)
                 var validPieces = rules.allowed;
 
+                var buildPosition = {
+                    x: lastPiece.nextX,
+                    y: lastPiece.nextY,
+                    z: lastPiece.nextZ,
+                    direction: lastPiece.nextDirection
+                };
+
                 callback({
                     success: true,
                     payload: {
                         validPieces: validPieces,
+                        validPieceEndpoints: buildValidPieceEndpoints(buildPosition, validPieces),
                         lastTrackType: lastPiece.trackType,
                         stateCategory: stateCategory,
                         isCircuitComplete: state.isComplete === true,
-                        position: {
-                            x: lastPiece.nextX,
-                            y: lastPiece.nextY,
-                            z: lastPiece.nextZ,
-                            direction: lastPiece.nextDirection
-                        }
+                        position: buildPosition
                     }
                 });
                 break;

@@ -144,7 +144,7 @@ def test_full_build_flow(plugin_server) -> None:
     result = mcp_server.place_track_segment(1, "EndStation")
     assert result[0]["success"] is True
     assert result[0]["pieces"][-1]["trackType"] == "EndStation"
-    assert "Flat" in result[0]["valid_pieces"]
+    assert "Flat" in [p["name"] for p in result[0]["valid_pieces"]]
 
     # 4. Lay two flat pieces of track.
     for _ in range(2):
@@ -153,6 +153,11 @@ def test_full_build_flow(plugin_server) -> None:
     assert len(result[0]["pieces"]) == 6
     assert result[0]["is_circuit_complete"] is False
     assert result[0]["current_endpoint"]["direction"] == 0
+    # Predicted endpoints for each valid piece arrive merged into the state.
+    flat = next((p for p in result[0]["valid_pieces"] if p["name"] == "Flat"), None)
+    assert flat is not None, f"Flat missing from valid_pieces: {result[0]['valid_pieces']}"
+    assert "endpoint" in flat
+    assert "x" in flat["endpoint"] and "direction" in flat["endpoint"]
 
     # 5. State round-trip.
     result = mcp_server.get_coaster_state(1)

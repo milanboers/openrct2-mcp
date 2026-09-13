@@ -274,7 +274,7 @@ def generate_height_map(
 
 
 def format_coaster_state(
-    ride_id: int, api_payload: dict[str, Any], valid_pieces: list[int]
+    ride_id: int, api_payload: dict[str, Any], valid_piece_ids: list[int]
 ) -> Tuple[dict[str, Any], MCPImage]:
     """
     Format the authoritative coaster state from the API payload.
@@ -337,8 +337,17 @@ def format_coaster_state(
     # Generate height map text
     height_map = generate_height_map(history, next_endpoint)
 
-    # Convert valid_pieces to semantic names
-    valid_names = [TRACK_TYPES.get(p, str(p)) for p in valid_pieces]
+    # Convert valid_pieces to semantic names, merging in the predicted endpoint
+    # for each piece so the agent sees name + destination together.
+    raw_endpoints = api_payload.get("validPieceEndpoints", {})
+    valid_pieces = []
+    for piece in valid_piece_ids:
+        name = TRACK_TYPES.get(piece, str(piece))
+        entry: dict[str, Any] = {"name": name}
+        ep = raw_endpoints.get(str(piece)) or raw_endpoints.get(piece)
+        if ep:
+            entry["endpoint"] = ep
+        valid_pieces.append(entry)
 
     ride_type = _get_ride_type(ride_id)
 
@@ -351,7 +360,7 @@ def format_coaster_state(
         "ride_type_name": ride_type_name,
         "pieces": formatted_pieces,
         "current_endpoint": next_endpoint,
-        "valid_pieces": valid_names,
+        "valid_pieces": valid_pieces,
         "is_circuit_complete": is_circuit_complete,
         "height_map": height_map,
     }
@@ -433,8 +442,9 @@ def place_track_segment(
         ride_type = current_state.get("ride_type", 52)
 
         valid_pieces = current_state.get("valid_pieces", [])  # type: ignore
-        if track_type not in valid_pieces:
-            error_msg = f"Invalid track type '{track_type}'. You MUST choose from the valid_pieces list: {valid_pieces}."
+        valid_names = [p.get("name") if isinstance(p, dict) else p for p in valid_pieces]
+        if track_type not in valid_names:
+            error_msg = f"Invalid track type '{track_type}'. You MUST choose from the valid_pieces list: {[n for n in valid_names if n]}."
             logger.warning(f"Agent attempted invalid move: {error_msg}")
             return {
                 "success": False,
@@ -513,6 +523,7 @@ def get_coaster_state(ride_id: int) -> Any:
     try:
         valid_pieces_resp = api_client.get_valid_next_pieces(ride_id)
         valid_pieces = valid_pieces_resp.get("validPieces", [])
+        valid_piece_endpoints = valid_pieces_resp.get("validPieceEndpoints", {})
         is_circuit_complete = valid_pieces_resp.get("isCircuitComplete", False)
         history_resp = api_client.get_track_history(ride_id)
 
@@ -539,6 +550,7 @@ def get_coaster_state(ride_id: int) -> Any:
             "history": history,
             "nextEndpoint": next_endpoint,
             "isCircuitComplete": is_circuit_complete,
+            "validPieceEndpoints": valid_piece_endpoints,
         }
 
         return list(format_coaster_state(ride_id, payload, valid_pieces))

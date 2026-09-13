@@ -119,6 +119,22 @@ function makeIterator(startEl) {
 // ---------------------------------------------------------------------------
 const actionHandlers = {};
 
+// Track segment geometry from the game's own catalog (real descriptor values).
+function seg(type, endX, endY, endZ, endDirection) {
+    return { type: type, endX: endX, endY: endY, endZ: endZ, endDirection: endDirection, elements: [{ x: 0, y: 0, z: 0 }] };
+}
+const TEST_SEGMENTS = [
+    seg(0, 0, 0, 0, 0), // Flat
+    seg(1, 0, 0, 0, 0), // EndStation
+    seg(2, 0, 0, 0, 0), // BeginStation
+    seg(3, 0, 0, 0, 0), // MiddleStation
+    seg(4, 0, 0, 16, 0), // Up25
+    seg(5, 0, 0, 64, 0), // Up60
+    seg(10, 0, 0, 0, 0), // Down25 (zBegin not exposed; the plugin's adjustment handles the drop)
+    seg(16, -64, -64, 0, 3), // LeftQuarterTurn5Tiles
+    seg(17, -64, 64, 0, 1), // RightQuarterTurn5Tiles
+];
+
 global.registerPlugin = (p) => {
     global.__plugin = p;
 };
@@ -127,6 +143,7 @@ global.network = {
 };
 global.map = map;
 global.context = {
+    getAllTrackSegments: () => TEST_SEGMENTS,
     executeAction: (name, args, cb) => {
         const h = actionHandlers[name];
         if (h) h(args, cb);
@@ -268,6 +285,30 @@ assert(removeArgs.z === 96, "trackremove uses exact baseZ 96, not tileZ*8=" + Ma
 assert(r.success === true && r.payload.piecesRemaining === 1, "one piece remains after undo");
 assert(r.payload.nextEndpoint !== null && r.payload.nextEndpoint.x === 66,
     "next endpoint points back at the tile where the removed piece was (got " + (r.payload.nextEndpoint ? r.payload.nextEndpoint.x : "null") + ")");
+
+// 7. Predicted landing endpoints for each valid piece.
+// Track ends at (11, 10) heading west, so the next placement point is (10, 10, 14) dir 0.
+clearTiles();
+const ride7 = 7;
+const els7 = [
+    makeTrack(12, 10, 2, 0, 112), // BeginStation
+    makeTrack(11, 10, 0, 0, 112), // Flat
+];
+linkSeq(els7);
+for (const el of els7) place(ride7, el);
+r2 = request("getValidNextPieces", { rideId: ride7 });
+const eps = r2.payload.validPieceEndpoints;
+assert(eps !== undefined, "validPieceEndpoints present");
+assert(eps["0"] && eps["0"].x === 9 && eps["0"].y === 10 && eps["0"].z === 14 && eps["0"].direction === 0,
+    "Flat predicts landing one tile west at same height (got " + JSON.stringify(eps["0"]) + ")");
+assert(eps["4"] && eps["4"].x === 9 && eps["4"].z === 16,
+    "Up25 predicts a 2-unit climb (got " + JSON.stringify(eps["4"]) + ")");
+assert(eps["10"] && eps["10"].z === 12,
+    "Down25 predicts a 2-unit drop (got " + JSON.stringify(eps["10"]) + ")");
+assert(eps["16"] && eps["16"].x === 8 && eps["16"].y === 7 && eps["16"].direction === 3,
+    "LeftQuarterTurn5Tiles predicts a left turn ending facing direction 3 (got " + JSON.stringify(eps["16"]) + ")");
+assert(eps["17"] && eps["17"].x === 8 && eps["17"].y === 13 && eps["17"].direction === 1,
+    "RightQuarterTurn5Tiles predicts a right turn ending facing direction 1 (got " + JSON.stringify(eps["17"]) + ")");
 
 // ---------------------------------------------------------------------------
 

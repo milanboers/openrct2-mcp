@@ -8,7 +8,7 @@ description: Specialized guidance for building roller coasters in OpenRCT2 using
 This skill provides comprehensive procedural knowledge for building effective and valid roller coasters using the OpenRCT2 Ride Creation MCP server.
 
 ## 🛑 THE GOLDEN RULE 🛑
-You **MUST ONLY** select a `track_type` that appears in the `valid_pieces` list of the **previous** tool response. If you ignore this list, the placement **will fail**.
+You **MUST ONLY** select a `track_type` (its `name`) that appears in the `valid_pieces` list of the **previous** tool response. If you ignore this list, the placement **will fail**.
 
 ## Ride Types
 
@@ -63,6 +63,7 @@ You cannot jump from Flat to Steep. You **MUST** use transition pieces:
 
 ### 4. Navigation & Loop Closure
 - **Spatial Data**: Check `current_endpoint.distance`.
+- **Plan ahead**: Every entry in `valid_pieces` has an `endpoint` — the tile and direction where that piece would leave you. Use it to plan turns and pick the piece that brings you closest to home.
 - **Closure**: Steer back to `distance: {x: 0, y: 0, z: 0}`.
 - **Banking**: ALWAYS bank your turns (`FlatToLeftBank`, `FlatToRightBank`) or the ride will be too intense.
 
