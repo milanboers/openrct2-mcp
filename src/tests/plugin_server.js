@@ -188,6 +188,16 @@ actionHandlers["trackremove"] = (args, cb) => {
     cb({});
 };
 
+actionHandlers["ridesetname"] = (args, cb) => {
+    for (const r of ridesList) {
+        if (r.id === args.ride) {
+            r.name = args.name;
+            break;
+        }
+    }
+    cb({});
+};
+
 actionHandlers["ridedemolish"] = (args, cb) => {
     for (let i = ridesList.length - 1; i >= 0; i--) {
         if (ridesList[i].id === args.ride) {

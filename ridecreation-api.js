@@ -1212,10 +1212,23 @@ function main() {
                 };
                 context.executeAction("ridecreate", rideCreateArgs, function (result) {
                     if (result && typeof result.ride === "number") {
-                        callback({
-                            success: true,
-                            payload: { rideId: result.ride }
-                        });
+                        var rideId = result.ride;
+                        var requestedName = request.params.name;
+                        if (typeof requestedName === "string" && requestedName.trim() !== "") {
+                            // ridecreate always assigns a default name; apply the
+                            // requested one separately.
+                            context.executeAction("ridesetname", { ride: rideId, name: requestedName }, function () {
+                                callback({
+                                    success: true,
+                                    payload: { rideId: rideId }
+                                });
+                            });
+                        } else {
+                            callback({
+                                success: true,
+                                payload: { rideId: rideId }
+                            });
+                        }
                     } else {
                         callback({
                             success: false,

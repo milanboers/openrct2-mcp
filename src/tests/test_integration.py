@@ -131,6 +131,9 @@ def test_full_build_flow(plugin_server) -> None:
     assert len(state["pieces"]) == 1
     assert state["pieces"][0]["trackType"] == "EndStation"
     assert state["is_circuit_complete"] is False
+    # The requested name is applied to the ride.
+    rides = mcp_server.list_all_rides()
+    assert rides[0]["name"] == "Integration", f"ride name not applied: {rides}"
 
     # 2. An unknown piece is rejected.
     result = mcp_server.place_track_segment(1, "Banana")
