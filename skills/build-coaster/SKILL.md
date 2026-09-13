@@ -38,9 +38,11 @@ The server uses **Alignment Snapping**. You only select track types; coordinates
 The server returns images and a text-based height map of the current layout. The numbers represent the height (Z-value). Use them! Analyze them!
 
 ### 1. The Station Sequence
-A station must follow this exact sequence:
-1. **Middle pieces**: Place 2-4 **MiddleStation** pieces.
-2. **The Cap**: Place one **EndStation** piece to enable normal track.
+`create_ride` places the **BeginStation** for you. Then:
+1. **Middle pieces**: Place 2-4 **MiddleStation** pieces, heading straight out of the station.
+2. **The Cap**: Place one **EndStation** piece — this is what enables normal track.
+
+Only after the EndStation is in place can you lay normal track. The station length is flexible: the circuit is complete when the track returns to the station, whatever the station looks like.
 
 ### 2. Pitch Transitions (CRITICAL)
 You cannot jump from Flat to Steep. You **MUST** use transition pieces:
@@ -63,6 +65,23 @@ You cannot jump from Flat to Steep. You **MUST** use transition pieces:
 - **Spatial Data**: Check `current_endpoint.distance`.
 - **Closure**: Steer back to `distance: {x: 0, y: 0, z: 0}`.
 - **Banking**: ALWAYS bank your turns (`FlatToLeftBank`, `FlatToRightBank`) or the ride will be too intense.
+
+## Working with an Existing Park
+
+You can build a coaster from scratch **or continue one that already has track**. The server reads the track straight from the game, so loading a save with existing coasters works fine — pick the ride you want and keep building, or call `create_ride` for a new one anywhere on the map.
+
+## When a Placement Fails
+
+Even a piece from `valid_pieces` can be rejected if it would hit the ground, scenery, or existing track. The error message tells you why:
+
+| Error | Likely cause | What to do |
+|-------|--------------|------------|
+| `Location occupied` | Building into the ground or existing track | `undo_last_piece` and adjust your line |
+| `Invalid height` | Too high above or too deep below the ground | Raise or lower the layout, or `undo_last_piece` |
+| `Not enough space` / `Path blocked` | Scenery or another ride is in the way | Change direction, or `undo_last_piece` |
+| `Track piece not available for this ride type` | The piece isn't legal for this ride | Pick a different piece from `valid_pieces` |
+
+After a failure the server returns the full state again — read `valid_pieces` and the height map, adjust, and retry. Don't retry the same piece at the same spot.
 
 ## Track Types Reference
 
@@ -93,3 +112,13 @@ You cannot jump from Flat to Steep. You **MUST** use transition pieces:
 | `distance.z > 0` | Too high | Use Down transitions (`FlatToDown25`) then Slopes (`Down25`). |
 | `distance.z < 0` | Too low | You built too deep! `undo_last_piece`. |
 | Large `x` or `y` | Far away | Turn towards the origin (`0, 0`). |
+
+## Ratings (get_ride_stats)
+
+After `start_ride_test`, `get_ride_stats` returns `excitement`, `intensity`, and `nausea` on a 0-100 scale. A good coaster roughly scores:
+
+- **excitement** in the 60s-80s
+- **intensity** around 40-60 (higher is more forceful, but too high feels rough)
+- **nausea** as low as possible (under ~20)
+
+If excitement is low, add hills, airtime, or a bigger drop. If intensity or nausea are too high, bank your turns more and keep the layout smoother.
