@@ -38,11 +38,11 @@ The server uses **Alignment Snapping**. You only select track types; coordinates
 The server returns images and a text-based height map of the current layout. The numbers represent the height (Z-value). Use them! Analyze them!
 
 ### 1. The Station Sequence
-`create_ride` places the **BeginStation** for you. Then:
+`create_ride` places the first station piece for you. The game decides whether each piece counts as begin, middle, or end based on the station's shape — so just build the station as a straight line:
 1. **Middle pieces**: Place 2-4 **MiddleStation** pieces, heading straight out of the station.
-2. **The Cap**: Place one **EndStation** piece — this is what enables normal track.
+2. **The Cap**: Place one **EndStation** piece to finish the station.
 
-Only after the EndStation is in place can you lay normal track. The station length is flexible: the circuit is complete when the track returns to the station, whatever the station looks like.
+Station pieces stay available until you lay your first non-station piece — that's when the station is locked. The station length is flexible: the circuit is complete when the track returns to the station, whatever it looks like.
 
 ### 2. Pitch Transitions (CRITICAL)
 You cannot jump from Flat to Steep. You **MUST** use transition pieces:

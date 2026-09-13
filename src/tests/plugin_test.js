@@ -209,7 +209,7 @@ assert(r2.success === true && r2.payload.stateCategory === "flat", "last piece (
 assert(JSON.stringify(r2.payload.validPieces) === JSON.stringify([0, 6, 12, 16, 17, 42, 43, 4, 10, 18, 19]),
     "flat category exposes the expected valid pieces");
 
-// 3. A station-only track maps to the station rules.
+// 3. A station-only track keeps offering station pieces alongside normal track.
 clearTiles();
 const ride3 = 3;
 const els3 = [
@@ -220,9 +220,14 @@ const els3 = [
 linkSeq(els3);
 for (const el of els3) place(ride3, el);
 r2 = request("getValidNextPieces", { rideId: ride3 });
-assert(r2.payload.stateCategory === "end_station", "EndStation last -> 'end_station' category");
-assert(JSON.stringify(r2.payload.validPieces) === JSON.stringify([0, 6, 12, 16, 17, 18, 19, 42, 43]),
-    "end_station exposes track pieces, not more station");
+assert(r2.payload.stateCategory === "station", "any station piece last -> 'station' category");
+// The game auto-reclassifies station pieces (a lone piece becomes an EndStation),
+// so while the last piece is a station piece the agent may keep extending the
+// station OR start laying normal track.
+for (const expected of [1, 3, 0, 6, 12, 16, 17, 18, 19, 42, 43]) {
+    assert(r2.payload.validPieces.indexOf(expected) !== -1,
+        "valid pieces include " + expected + " while the station is still being built");
+}
 
 // 4. A ride with no track gets the initial fallback.
 clearTiles();

@@ -33,7 +33,7 @@ class TestCreateRide:
             mock_place.return_value = {"success": True}
             mock_valid.return_value = {"validPieces": [0, 6]} # Flat, FlatToUp25
             mock_hist.return_value = {
-                "history": [{"x": 67, "y": 66, "z": 14, "direction": 0, "trackType": 2, "nextX": 66, "nextY": 66, "nextZ": 14, "nextDirection": 0}]
+                "history": [{"x": 67, "y": 66, "z": 14, "direction": 0, "trackType": 1, "nextX": 66, "nextY": 66, "nextZ": 14, "nextDirection": 0}]
             }
             mock_list.return_value = [{"id": 1, "type": 52}]
 
@@ -44,7 +44,8 @@ class TestCreateRide:
             assert result[0]["ride_id"] == 1
             assert result[0]["ride_type"] == 52
             assert len(result[0]["pieces"]) == 1
-            assert result[0]["pieces"][0]["trackType"] == "BeginStation"
+            # The game classifies the first station piece as an EndStation.
+            assert result[0]["pieces"][0]["trackType"] == "EndStation"
             valid_names = [p["name"] for p in result[0]["valid_pieces"]]
             assert "Flat" in valid_names
             assert "FlatToUp25" in valid_names

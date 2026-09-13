@@ -64,13 +64,12 @@ function main() {
     // Track validation rules based on ending pitch and roll states
     // Based on actual TrackElemType enum from OpenRCT2 source and neural_rct constraints
     var trackConnectionRules = {
-        // Station pieces - Begin/Middle station can only go to End/Middle station
+        // The game auto-assigns begin/middle/end to station pieces based on the
+        // station's shape (a lone piece becomes an EndStation), so while the
+        // last piece is a station piece the agent is "at the station": it may
+        // keep extending the station or start laying normal track.
         "station": {
-            allowed: [1, 3] // EndStation, MiddleStation only
-        },
-        // End station has many valid transitions (based on neural_rct)
-        "end_station": {
-            allowed: [0, 6, 12, 16, 17, 18, 19, 42, 43] // flat, slope transitions, turns, banking starts
+            allowed: [1, 3, 0, 6, 12, 16, 17, 18, 19, 42, 43] // station pieces + track starters
         },
         // Flat straight pieces (type 0)
         "flat": {
@@ -122,9 +121,9 @@ function main() {
             case 0:  // Flat
                 return "flat";
 
-            // Station pieces - distinguish end station from begin/middle
+            // Station pieces - the game decides begin/middle/end, so treat them all
+            // the same for validation purposes.
             case 1:  // EndStation
-                return "end_station";
             case 2:  // BeginStation
             case 3:  // MiddleStation
                 return "station";
@@ -869,31 +868,14 @@ function main() {
                 var stateCategory = getTrackStateCategory(lastPiece.trackType, false);
                 var rules = trackConnectionRules[stateCategory];
 
+                var validPieces;
                 if (!rules) {
                     // No specific rules - allow safe flat pieces only
                     console.log("Warning: No rules for state category:", stateCategory, "track type:", lastPiece.trackType);
-                    var fallbackPosition = {
-                        x: lastPiece.nextX,
-                        y: lastPiece.nextY,
-                        z: lastPiece.nextZ,
-                        direction: lastPiece.nextDirection
-                    };
-                    callback({
-                        success: true,
-                        payload: {
-                            validPieces: [0, 16, 17, 42, 43], // Only flat and turns as safe fallback
-                            validPieceEndpoints: buildValidPieceEndpoints(fallbackPosition, [0, 16, 17, 42, 43]),
-                            lastTrackType: lastPiece.trackType,
-                            stateCategory: stateCategory,
-                            isCircuitComplete: state.isComplete === true,
-                            position: fallbackPosition
-                        }
-                    });
-                    return;
+                    validPieces = [0, 16, 17, 42, 43];
+                } else {
+                    validPieces = rules.allowed;
                 }
-
-                // Return the allowed pieces directly (allowed and forbidden lists are mutually exclusive by design)
-                var validPieces = rules.allowed;
 
                 var buildPosition = {
                     x: lastPiece.nextX,

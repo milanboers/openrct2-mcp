@@ -119,7 +119,8 @@ def plugin_server():
 @pytest.mark.skipif(not _has_node, reason="node is required for integration tests")
 def test_full_build_flow(plugin_server) -> None:
     """Create a ride, build a station and track, query state, undo, list, delete."""
-    # 1. Create a ride; the plugin places the BeginStation.
+    # 1. Create a ride. The game places the first station piece and classifies
+    # it as an EndStation (it auto-assigns begin/middle/end by geometry).
     result = mcp_server.create_ride(name="Integration", ride_type=52)
     assert isinstance(result, list)
     state = result[0]
@@ -128,22 +129,23 @@ def test_full_build_flow(plugin_server) -> None:
     assert state["ride_type"] == 52
     assert state["ride_type_name"] == "Wooden Roller Coaster"
     assert len(state["pieces"]) == 1
-    assert state["pieces"][0]["trackType"] == "BeginStation"
+    assert state["pieces"][0]["trackType"] == "EndStation"
     assert state["is_circuit_complete"] is False
 
-    # 2. Normal track is not valid while the station is incomplete.
-    result = mcp_server.place_track_segment(1, "Flat")
+    # 2. An unknown piece is rejected.
+    result = mcp_server.place_track_segment(1, "Banana")
     assert isinstance(result, dict)
     assert result["success"] is False
     assert "Invalid track type" in result["error_message"]
 
-    # 3. Finish the station: two middle pieces, then the end piece.
+    # 3. Build a 4-piece station (the game keeps reclassifying as we extend it).
     for _ in range(2):
         result = mcp_server.place_track_segment(1, "MiddleStation")
         assert result[0]["success"] is True
     result = mcp_server.place_track_segment(1, "EndStation")
     assert result[0]["success"] is True
     assert result[0]["pieces"][-1]["trackType"] == "EndStation"
+    assert len(result[0]["pieces"]) == 4
     assert "Flat" in [p["name"] for p in result[0]["valid_pieces"]]
 
     # 4. Lay two flat pieces of track.

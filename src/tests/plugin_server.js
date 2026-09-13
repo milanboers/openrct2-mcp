@@ -125,6 +125,27 @@ actionHandlers["ridecreate"] = (args, cb) => {
     cb({ ride: nextRideId });
 };
 
+// The real game (TrackAddStationElement) reassigns begin/middle/end to the
+// ride's station pieces based on the station's shape: a lone piece becomes an
+// EndStation; otherwise the back-most is the BeginStation and the front-most
+// the EndStation, with middles in between.
+function reclassifyStation(ride) {
+    const list = rideTracks[ride];
+    const stationIndices = [];
+    for (let i = 0; i < list.length; i++) {
+        const t = list[i].trackType;
+        if (t === 1 || t === 2 || t === 3) stationIndices.push(i);
+    }
+    if (stationIndices.length === 1) {
+        list[stationIndices[0]].trackType = 1;
+    } else if (stationIndices.length > 1) {
+        for (let i = 0; i < stationIndices.length; i++) {
+            const idx = stationIndices[i];
+            list[idx].trackType = i === 0 ? 2 : (i === stationIndices.length - 1 ? 1 : 3);
+        }
+    }
+}
+
 actionHandlers["trackplace"] = (args, cb) => {
     const ride = args.ride;
     const tileX = Math.floor(args.x / 32);
@@ -138,6 +159,7 @@ actionHandlers["trackplace"] = (args, cb) => {
         el.prev = prev;
     }
     list.push(el);
+    reclassifyStation(ride);
     cb({ position: { x: args.x, y: args.y, z: args.z } });
 };
 
