@@ -60,6 +60,23 @@ TRACK_TYPES = {
 # Reverse mapping for input
 TRACK_NAME_TO_ID = {v: k for k, v in TRACK_TYPES.items()}
 
+# Ride type IDs -> names. The plugin's track validation is tuned for the
+# Wooden Roller Coaster (52); other types may not place correctly.
+RIDE_TYPES = {
+    0: "Spiral Roller Coaster",
+    1: "Stand-up Roller Coaster",
+    3: "Inverted Roller Coaster",
+    13: "Bobsleigh Coaster",
+    15: "Looping Roller Coaster",
+    17: "Mine Train Coaster",
+    19: "Corkscrew Roller Coaster",
+    44: "Vertical Drop Roller Coaster",
+    51: "Twister Roller Coaster",
+    52: "Wooden Roller Coaster",
+    54: "Steel Wild Mouse",
+    57: "Flying Roller Coaster",
+}
+
 
 def _get_ride_type(ride_id: int) -> int:
     """Helper to fetch ride type from the game by ID."""
@@ -323,10 +340,15 @@ def format_coaster_state(
     # Convert valid_pieces to semantic names
     valid_names = [TRACK_TYPES.get(p, str(p)) for p in valid_pieces]
 
+    ride_type = _get_ride_type(ride_id)
+
+    ride_type_name = RIDE_TYPES.get(ride_type, f"Unknown({ride_type})")
+
     state_dict = {
         "success": True,
         "ride_id": ride_id,
-        "ride_type": _get_ride_type(ride_id),
+        "ride_type": ride_type,
+        "ride_type_name": ride_type_name,
         "pieces": formatted_pieces,
         "current_endpoint": next_endpoint,
         "valid_pieces": valid_names,
@@ -349,6 +371,9 @@ def create_ride(
     """
     Create a new roller coaster ride and place the first station piece.
     All parameters are optional and have reasonable defaults.
+
+    ride_type: Numeric ride type ID from the game. 52 = Wooden Roller Coaster
+    (the supported default); see the build-coaster skill for the full table.
     """
     try:
         # 1. Create the ride via API

@@ -48,10 +48,10 @@ So on macOS the file ends up at `~/Library/Application Support/OpenRCT2/plugin/r
 
 This repo includes a ready-made scenario in `scenarios/sandbox.park`. It's a flat, empty map with the Wooden Roller Coaster already available, so it works out of the box. Copy it into the `scenario` subfolder of the OpenRCT2 user folder from step 1.
 
-Prefer your own map? Any scenario works as long as:
+Prefer your own map? Most scenarios work — two things make it easier:
 
-- the terrain is **flat at ground level around the middle of the map** — that's where the station always goes, and
-- the **Wooden Roller Coaster** is researched or available.
+- **The station spot**: `create_ride` puts the station at tile (67, 66) at ground level — roughly the middle of a 128×128 map — so that one tile needs to be flat and clear. You can pass custom `station_x/y/z` to `create_ride`, but the plugin assumes the default spot when checking if a circuit is complete, so it's easiest to use a map that's flat there.
+- **The Wooden Roller Coaster**: it's the default ride type and the track validation is tuned for it, so it needs to be researched or available in the scenario. Other ride types can work too, but some track pieces may fail to place.
 
 ### 3. Install the MCP server
 
@@ -139,8 +139,8 @@ The agent walks through the tools — `create_ride`, `place_track_segment`, `get
 
 ## Tips
 
-- The plugin's track validation is tuned for the **Wooden Roller Coaster** (the default ride type); other ride types may not work.
-- The station is always placed at the same spot near the middle of the map, at ground level. That's why the sandbox is flat and empty — give the coaster room to roam.
+- The plugin's track validation is tuned for the **Wooden Roller Coaster** (the default ride type); other ride types work but may fail on some pieces.
+- The station is placed at the same spot near the middle of the map, at ground level. That's why the sandbox is flat and empty — give the coaster room to roam.
 - If the agent says a track piece is invalid, it ignored the `valid_pieces` list. Tell it to re-read the last tool response.
 
 ## Troubleshooting

@@ -10,6 +10,27 @@ This skill provides comprehensive procedural knowledge for building effective an
 ## 🛑 THE GOLDEN RULE 🛑
 You **MUST ONLY** select a `track_type` that appears in the `valid_pieces` list of the **previous** tool response. If you ignore this list, the placement **will fail**.
 
+## Ride Types
+
+`create_ride` takes a numeric `ride_type`. The supported default is **52 = Wooden Roller Coaster** — the track validation is tuned for it, so always use it unless told otherwise.
+
+| ID | Ride Type |
+|----|-----------|
+| 52 | Wooden Roller Coaster (default) |
+| 51 | Twister Roller Coaster |
+| 54 | Steel Wild Mouse |
+| 0 | Spiral Roller Coaster |
+| 1 | Stand-up Roller Coaster |
+| 3 | Inverted Roller Coaster |
+| 13 | Bobsleigh Coaster |
+| 15 | Looping Roller Coaster |
+| 17 | Mine Train Coaster |
+| 19 | Corkscrew Roller Coaster |
+| 44 | Vertical Drop Roller Coaster |
+| 57 | Flying Roller Coaster |
+
+Do **not** invent ride type numbers — use only the table above. The state returned by `create_ride` includes `ride_type_name`, so double-check it matches what the user asked for.
+
 ## Building Workflow (Follow the Cursor)
 
 The server uses **Alignment Snapping**. You only select track types; coordinates are handled for you.
