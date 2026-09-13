@@ -143,6 +143,7 @@ The agent walks through the tools — `create_ride`, `place_track_segment`, `get
 - The plugin's track validation is tuned for the **Wooden Roller Coaster** (the default ride type); other ride types work but may fail on some pieces.
 - The station is placed at the same spot near the middle of the map, at ground level. That's why the sandbox is flat and empty — give the coaster room to roam.
 - If the agent says a track piece is invalid, it ignored the `valid_pieces` list. Tell it to re-read the last tool response.
+- The server reads the track straight from the game, so you can build **multiple coasters** in one session, **continue a coaster from a previous session**, or work on a save that already has coasters — just point the agent at the ride you want to keep building.
 
 ## Troubleshooting
 
