@@ -677,7 +677,8 @@ function main() {
                         payload: {
                             validPieces: [0, 1, 2, 3], // Only flat and station pieces to start
                             lastTrackType: null,
-                            stateCategory: "initial"
+                            stateCategory: "initial",
+                            isCircuitComplete: false
                         }
                     });
                     return;
@@ -699,6 +700,7 @@ function main() {
                             validPieces: [0, 16, 17, 42, 43], // Only flat and turns as safe fallback
                             lastTrackType: lastPiece.trackType,
                             stateCategory: stateCategory,
+                            isCircuitComplete: state.isComplete === true,
                             position: {
                                 x: lastPiece.nextX,
                                 y: lastPiece.nextY,
@@ -719,6 +721,7 @@ function main() {
                         validPieces: validPieces,
                         lastTrackType: lastPiece.trackType,
                         stateCategory: stateCategory,
+                        isCircuitComplete: state.isComplete === true,
                         position: {
                             x: lastPiece.nextX,
                             y: lastPiece.nextY,
@@ -974,6 +977,8 @@ function main() {
 
                         // Remove the piece from history
                         state.history.pop();
+                        // Removing a piece reopens the circuit (the last piece was the connector)
+                        state.isComplete = false;
 
                         // Prepare response with the new current position
                         var responsePayload = {

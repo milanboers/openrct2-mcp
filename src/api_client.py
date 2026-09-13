@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import socket
+import threading
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -26,16 +27,14 @@ class OpenRCT2API:
         self.port = port
         self._sock: Optional[socket.socket] = None
         self._file_obj: Optional[io.TextIOWrapper] = None
+        # The socket is shared: serialise request/response pairs so concurrent
+        # tool calls can't read each other's responses.
+        self._lock = threading.Lock()
 
     def _get_connection(self, timeout: float = 5.0) -> socket.socket:
         """Establish or return existing connection."""
         if self._sock:
-            try:
-                # Check if socket is still alive
-                self._sock.send(b"")
-                return self._sock
-            except socket.error:
-                self._close_connection()
+            return self._sock
 
         try:
             self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -72,30 +71,31 @@ class OpenRCT2API:
         """Send a JSON request and wait for response."""
         message = json.dumps({"endpoint": endpoint, "params": params or {}}) + "\n"
 
-        try:
-            sock = self._get_connection(timeout)
-            sock.sendall(message.encode("utf-8"))
+        with self._lock:
+            try:
+                sock = self._get_connection(timeout)
+                sock.sendall(message.encode("utf-8"))
 
-            if self._file_obj is None:
-                raise APIError("Connection not established")
+                if self._file_obj is None:
+                    raise APIError("Connection not established")
 
-            response_line = self._file_obj.readline()
-            if not response_line:
+                response_line = self._file_obj.readline()
+                if not response_line:
+                    self._close_connection()
+                    raise APIError("Empty response (connection closed by server)")
+
+                result = json.loads(response_line)
+                if not result.get("success", False):
+                    raise APIError(result.get("error", "Unknown API error"))
+
+                payload = result.get("payload", {})
+                return payload
+
+            except (socket.timeout, socket.error) as e:
                 self._close_connection()
-                raise APIError("Empty response (connection closed by server)")
-
-            result = json.loads(response_line)
-            if not result.get("success", False):
-                raise APIError(result.get("error", "Unknown API error"))
-
-            payload = result.get("payload", {})
-            return payload
-
-        except (socket.timeout, socket.error) as e:
-            self._close_connection()
-            raise APIError(f"API communication error: {e}")
-        except json.JSONDecodeError as e:
-            raise APIError(f"Failed to decode API response: {e}")
+                raise APIError(f"API communication error: {e}")
+            except json.JSONDecodeError as e:
+                raise APIError(f"Failed to decode API response: {e}")
 
     def create_ride(
         self,

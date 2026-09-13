@@ -22,14 +22,6 @@ mcp = FastMCP("Roller Coaster Creator")
 # Initialize API client
 api_client = OpenRCT2API()
 
-# Map common error codes to descriptive strings for the agent
-ERROR_MAP = {
-    1: "Not enough space (Path might be blocked by scenery or another ride)",
-    9: "Location occupied (You might be trying to build into the ground or another track piece)",
-    11: "Invalid height (Too high above ground or too deep below)",
-    12: "Track piece not available for this ride type",
-}
-
 
 # Track Type Mapping
 TRACK_TYPES = {
@@ -304,9 +296,10 @@ def format_coaster_state(
             }
         )
 
-    # Calculate circuit completion
-    is_circuit_complete = False
-    if start_pos and next_endpoint:
+    # Calculate circuit completion. The plugin reports the authoritative value
+    # (it knows the station layout); fall back to a geometric check if absent.
+    is_circuit_complete = api_payload.get("isCircuitComplete", False)
+    if not is_circuit_complete and start_pos and next_endpoint:
         is_circuit_complete = (
             next_endpoint.get("x") == start_pos.get("x")
             and next_endpoint.get("y") == start_pos.get("y")
@@ -460,14 +453,7 @@ def place_track_segment(
         return get_coaster_state(ride_id)
 
     except APIError as e:
-        error_msg_raw = str(e)
-        error_msg = error_msg_raw
-        try:
-            error_code = int(error_msg_raw)
-            error_msg = ERROR_MAP.get(error_code, f"Game Engine Error {error_code}")
-        except ValueError:
-            pass
-
+        error_msg = str(e)
         logger.error(f"Placement FAILED: {error_msg}")
         try:
             state = get_coaster_state(ride_id)
@@ -485,10 +471,10 @@ def undo_last_piece(ride_id: int) -> Any:
     Remove the last placed track segment.
     """
     try:
-        result = api_client.delete_last_track_piece(ride_id)
-        valid_pieces_resp = api_client.get_valid_next_pieces(ride_id)
-        valid_pieces = valid_pieces_resp.get("validPieces", [])
-        return list(format_coaster_state(ride_id, result, valid_pieces))
+        api_client.delete_last_track_piece(ride_id)
+        # Re-fetch the authoritative state: the delete response only contains
+        # the next endpoint, not the remaining track history.
+        return get_coaster_state(ride_id)
     except APIError as e:
         logger.error(f"API error undoing last piece: {e}")
         return get_coaster_state(ride_id)
@@ -502,6 +488,7 @@ def get_coaster_state(ride_id: int) -> Any:
     try:
         valid_pieces_resp = api_client.get_valid_next_pieces(ride_id)
         valid_pieces = valid_pieces_resp.get("validPieces", [])
+        is_circuit_complete = valid_pieces_resp.get("isCircuitComplete", False)
         history_resp = api_client.get_track_history(ride_id)
 
         history = history_resp.get("history", [])
@@ -526,7 +513,7 @@ def get_coaster_state(ride_id: int) -> Any:
         payload = {
             "history": history,
             "nextEndpoint": next_endpoint,
-            "isCircuitComplete": False,
+            "isCircuitComplete": is_circuit_complete,
         }
 
         return list(format_coaster_state(ride_id, payload, valid_pieces))

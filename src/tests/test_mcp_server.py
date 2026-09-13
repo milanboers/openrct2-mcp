@@ -102,21 +102,21 @@ class TestUndoLastPiece:
         """Test successful undo."""
         with patch.object(api_client, 'delete_last_track_piece') as mock_delete, \
              patch.object(api_client, 'get_valid_next_pieces') as mock_valid, \
+             patch.object(api_client, 'get_track_history') as mock_hist, \
              patch.object(api_client, 'list_all_rides') as mock_list:
 
-            mock_delete.return_value = {
-                "success": True,
-                "nextEndpoint": {"x": 10, "y": 10, "z": 2, "direction": 0},
-                "history": []
+            mock_delete.return_value = {"success": True}
+            mock_valid.return_value = {"validPieces": [0], "isCircuitComplete": False}
+            mock_hist.return_value = {
+                "history": [{"x": 67, "y": 66, "z": 14, "direction": 0, "trackType": 2, "nextX": 66, "nextY": 66, "nextZ": 14, "nextDirection": 0}]
             }
-            mock_valid.return_value = {"validPieces": [0]}
             mock_list.return_value = [{"id": 1, "type": 52}]
 
             result: Any = undo_last_piece(ride_id=1)
 
             assert isinstance(result, list)
             assert result[0]["success"] is True
-            assert len(result[0]["pieces"]) == 0
+            assert len(result[0]["pieces"]) == 1
             assert "height_map" in result[0]
             mock_delete.assert_called_once_with(1)
 
@@ -166,3 +166,19 @@ class TestCoasterTools:
             mock_list.return_value = [{"id": 1}]
             result: list[dict[str, Any]] = list_all_rides()
             assert len(result) == 1
+
+    def test_circuit_complete_reported_from_plugin(self) -> None:
+        """The plugin's isCircuitComplete flag must flow through to the state."""
+        with patch.object(api_client, 'get_valid_next_pieces') as mock_valid, \
+             patch.object(api_client, 'get_track_history') as mock_hist, \
+             patch.object(api_client, 'list_all_rides') as mock_list:
+
+            mock_valid.return_value = {"validPieces": [0], "isCircuitComplete": True}
+            mock_hist.return_value = {
+                "history": [{"x": 67, "y": 66, "z": 14, "direction": 0, "trackType": 2, "nextX": 61, "nextY": 66, "nextZ": 14, "nextDirection": 0}]
+            }
+            mock_list.return_value = [{"id": 1, "type": 52}]
+
+            result: Any = get_coaster_state(ride_id=1)
+            assert isinstance(result, list)
+            assert result[0]["is_circuit_complete"] is True
