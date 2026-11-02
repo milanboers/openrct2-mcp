@@ -1,4 +1,4 @@
-var PLUGIN_VERSION = "0.6.0";
+var PLUGIN_VERSION = "0.7.0";
 
 function main() {
     "use strict";
@@ -71,11 +71,11 @@ function main() {
         // last piece is a station piece the agent is "at the station": it may
         // keep extending the station or start laying normal track.
         "station": {
-            allowed: [1, 3, 0, 6, 12, 16, 17, 18, 19, 42, 43] // station pieces + track starters
+            allowed: [1, 3, 0, 6, 12, 16, 17, 18, 19, 42, 43, 99] // station pieces + track starters
         },
         // Flat straight pieces (type 0)
         "flat": {
-            allowed: [0, 6, 12, 16, 17, 42, 43, 4, 10, 18, 19] // flat, transitions, turns, banking transitions
+            allowed: [0, 6, 12, 16, 17, 42, 43, 18, 19, 99] // flat, transitions, turns, banking transitions, brakes
         },
         // Gentle up slope (type 4 = Up25)
         "up25": {
@@ -95,7 +95,7 @@ function main() {
         },
         // Turns (16, 17, 42, 43)
         "turn": {
-            allowed: [0, 16, 17, 42, 43, 6, 12, 18, 19] // flat, turns, gentle transitions, banking starts
+            allowed: [0, 16, 17, 42, 43, 6, 12, 18, 19, 99] // flat, turns, gentle transitions, banking starts, brakes
         },
         // Banking pieces
         "left_bank": {
@@ -121,6 +121,7 @@ function main() {
         switch(trackType) {
             // Flat pieces
             case 0:  // Flat
+            case 99: // Brakes
                 return "flat";
 
             // Station pieces - the game decides begin/middle/end, so treat them all
@@ -257,6 +258,7 @@ function main() {
         var startTileX = Math.round(iterator.position.x / 32);
         var startTileY = Math.round(iterator.position.y / 32);
         var startTileZ = Math.round(iterator.position.z / 8);
+        var startDirection = iterator.position.direction;
 
         var history = [];
         var isComplete = false;
@@ -293,7 +295,8 @@ function main() {
             // If we came back to the start element, the circuit is closed.
             if (Math.round(iterator.position.x / 32) === startTileX &&
                 Math.round(iterator.position.y / 32) === startTileY &&
-                Math.round(iterator.position.z / 8) === startTileZ) {
+                Math.round(iterator.position.z / 8) === startTileZ &&
+                iterator.position.direction === startDirection) {
                 isComplete = true;
                 break;
             }

@@ -61,15 +61,14 @@ You cannot jump from Flat to Steep. You **MUST** use transition pieces:
 *Example: To start a drop, you MUST place `FlatToDown25` before you can place `Down25`.*
 
 ### 3. The Lifthill
-- **Size**: Build high enough so you can make a decent drop later.
-- **Rule**: Set `has_chain_lift: true` for **EVERY** upward segment (`FlatToUp25` and `Up25`).
+- For a chain lift, set `has_chain_lift: true` on each lift segment, including the transition. Not every uphill section needs a chain.
 - **Sequence**: `FlatToUp25` -> `Up25` (Repeat) -> `Up25ToFlat`.
 
 ### 4. Navigation & Loop Closure
 - **Spatial Data**: Check `current_endpoint.distance`.
 - **Plan ahead**: Every entry in `valid_pieces` has an `endpoint` — the tile and direction where that piece would leave you. Use it to plan turns and pick the piece that brings you closest to home.
 - **Closure**: Steer back to `distance: {x: 0, y: 0, z: 0}`.
-- **Banking**: ALWAYS bank your turns (`FlatToLeftBank`, `FlatToRightBank`) or the ride will be too intense.
+- **Banking**: Banked turns (`FlatToLeftBank`, `FlatToRightBank`) can reduce lateral forces. Choose banking according to the intended design and test results.
 
 ## Working with an Existing Park
 

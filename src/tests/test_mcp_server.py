@@ -8,6 +8,7 @@ from mcp_server import (
     create_ride,
     generate_coaster_image,
     generate_height_map,
+    format_coaster_state,
     check_track_segment,
     get_map_area,
     place_track_segment,
@@ -38,6 +39,18 @@ def test_height_map_uses_element_tiles_and_preserves_crossing_heights() -> None:
     assert '14/18' in result and '15.5' in result
     assert 'not collision clearance' in result
     assert generate_height_map(None) == 'Track occupancy unavailable: update the OpenRCT2 plugin.'
+
+
+def test_explicit_incomplete_circuit_is_not_overridden_by_geometric_fallback() -> None:
+    piece = {'x': 10, 'y': 10, 'z': 14, 'direction': 0, 'trackType': 0}
+    endpoint = {'x': 10, 'y': 10, 'z': 14, 'direction': 0}
+
+    with patch('mcp_server._get_ride_type', return_value=52):
+        state, _ = format_coaster_state(1, {
+            'history': [piece], 'nextEndpoint': endpoint, 'isCircuitComplete': False,
+        }, [])
+
+    assert state['is_circuit_complete'] is False
 
 
 def test_coaster_image_draws_turns_as_curves() -> None:
@@ -331,8 +344,8 @@ class TestCoasterTools:
             delete.assert_called_once_with(1)
 
     def test_get_plugin_info(self) -> None:
-        with patch.object(api_client, 'get_plugin_info', return_value={'version': '0.6.0'}):
-            assert get_plugin_info() == {'version': '0.6.0', 'expected_version': '0.6.0', 'matches': True}
+        with patch.object(api_client, 'get_plugin_info', return_value={'version': '0.7.0'}):
+            assert get_plugin_info() == {'version': '0.7.0', 'expected_version': '0.7.0', 'matches': True}
 
     def test_list_rides_failure_is_not_empty_list(self) -> None:
         from api_client import APIError

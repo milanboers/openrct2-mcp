@@ -300,7 +300,7 @@ assert(r.payload.history[0].nextX === 66 && r.payload.history[0].nextDirection =
 // 2. Valid next pieces reflect the last piece's state category.
 let r2 = request("getValidNextPieces", { rideId: ride1 });
 assert(r2.success === true && r2.payload.stateCategory === "flat", "last piece (Flat) maps to 'flat' category");
-assert(JSON.stringify(r2.payload.validPieces) === JSON.stringify([0, 6, 12, 16, 17, 42, 43, 4, 10, 18, 19]),
+assert(JSON.stringify(r2.payload.validPieces) === JSON.stringify([0, 6, 12, 16, 17, 42, 43, 18, 19, 99]),
     "flat category exposes the expected valid pieces");
 
 // 3. A station-only track keeps offering station pieces alongside normal track.
@@ -318,7 +318,7 @@ assert(r2.payload.stateCategory === "station", "any station piece last -> 'stati
 // The game auto-reclassifies station pieces (a lone piece becomes an EndStation),
 // so while the last piece is a station piece the agent may keep extending the
 // station OR start laying normal track.
-for (const expected of [1, 3, 0, 6, 12, 16, 17, 18, 19, 42, 43]) {
+for (const expected of [1, 3, 0, 6, 12, 16, 17, 18, 19, 42, 43, 99]) {
     assert(r2.payload.validPieces.indexOf(expected) !== -1,
         "valid pieces include " + expected + " while the station is still being built");
 }
@@ -400,10 +400,7 @@ const eps = r2.payload.validPieceEndpoints;
 assert(eps !== undefined, "validPieceEndpoints present");
 assert(eps["0"] && eps["0"].x === 9 && eps["0"].y === 10 && eps["0"].z === 14 && eps["0"].direction === 0,
     "Flat predicts landing one tile west at same height (got " + JSON.stringify(eps["0"]) + ")");
-assert(eps["4"] && eps["4"].x === 9 && eps["4"].z === 16,
-    "Up25 predicts a 2-unit climb (got " + JSON.stringify(eps["4"]) + ")");
-assert(eps["10"] && eps["10"].z === 12,
-    "Down25 predicts a 2-unit drop (got " + JSON.stringify(eps["10"]) + ")");
+assert(!eps["4"] && !eps["10"], "flat track does not offer direct slope pieces without transitions");
 assert(eps["16"] && eps["16"].x === 8 && eps["16"].y === 7 && eps["16"].direction === 3,
     "LeftQuarterTurn5Tiles predicts a left turn ending facing direction 3 (got " + JSON.stringify(eps["16"]) + ")");
 assert(eps["17"] && eps["17"].x === 8 && eps["17"].y === 13 && eps["17"].direction === 1,

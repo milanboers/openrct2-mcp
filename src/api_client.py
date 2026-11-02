@@ -141,7 +141,7 @@ class OpenRCT2API:
         brake_speed: int = 0,
         seat_rotation: int = 0,
         track_place_flags: int = 0,
-        is_from_track_design: bool = True,
+        is_from_track_design: bool = False,
         has_chain_lift: Optional[bool] = None,
         query: bool = False,
     ) -> dict[str, Any]:

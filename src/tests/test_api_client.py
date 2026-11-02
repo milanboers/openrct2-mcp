@@ -82,8 +82,19 @@ class TestOpenRCT2API:
                 "brakeSpeed": 0,
                 "seatRotation": 0,
                 "trackPlaceFlags": 0,
-                "isFromTrackDesign": True
+                "isFromTrackDesign": False
             })
+
+    def test_track_query_uses_normal_construction_mode(self, api_client: OpenRCT2API) -> None:
+        with patch.object(api_client, '_send_request', return_value={'placeable': False}) as send:
+            result = api_client.place_track_piece(
+                ride_id=1, tile_coordinate_x=10, tile_coordinate_y=11, tile_coordinate_z=14,
+                direction=0, track_type=0, ride_type=52, query=True,
+            )
+
+        assert result == {'placeable': False}
+        assert send.call_args.args[0] == 'queryTrackPiece'
+        assert send.call_args.args[1]['isFromTrackDesign'] is False
 
     def test_api_error_on_failure(self, api_client: OpenRCT2API) -> None:
         """Test that APIError is raised on API failure."""

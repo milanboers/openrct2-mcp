@@ -56,6 +56,7 @@ TRACK_TYPES = {
     23: "BankedRightQuarterTurn5Tiles",
     44: "LeftBankedQuarterTurn3Tiles",
     45: "RightBankedQuarterTurn3Tiles",
+    99: "Brakes",
 }
 
 # Reverse mapping for input
@@ -298,14 +299,16 @@ def format_coaster_state(
 
     # Calculate circuit completion. The plugin reports the authoritative value
     # (it knows the station layout); fall back to a geometric check if absent.
-    is_circuit_complete = api_payload.get("isCircuitComplete", False)
-    if not is_circuit_complete and start_pos and next_endpoint:
+    is_circuit_complete = api_payload.get("isCircuitComplete")
+    if is_circuit_complete is None and start_pos and next_endpoint:
         is_circuit_complete = (
             next_endpoint.get("x") == start_pos.get("x")
             and next_endpoint.get("y") == start_pos.get("y")
             and next_endpoint.get("z") == start_pos.get("z")
             and next_endpoint.get("direction") == start_pos.get("direction")
         )
+    if is_circuit_complete is None:
+        is_circuit_complete = False
 
     # Enrich next_endpoint with distance
     if start_pos and next_endpoint:
@@ -458,8 +461,9 @@ def check_track_segment(
 ) -> dict[str, Any]:
     """Query whether a compatible piece can be placed at the current endpoint.
 
-    Does not place track. A successful query is not a reservation; the park may
-    change before placement. Game errors include the title and message if available.
+    Does not place track. A successful query is not a reservation and does not
+    guarantee ride support or track connectivity. The park may change before
+    placement. Game errors include the title and message if available.
     """
     try:
         segment = TrackSegment(track_type=track_type, brake_speed=brake_speed,
@@ -695,10 +699,10 @@ def get_plugin_info() -> dict[str, Any]:
     """
     try:
         info = api_client.get_plugin_info()
-        return {"version": info.get("version"), "expected_version": "0.6.0",
-                "matches": info.get("version") == "0.6.0"}
+        return {"version": info.get("version"), "expected_version": "0.7.0",
+                "matches": info.get("version") == "0.7.0"}
     except APIError as e:
-        return {"success": False, "error": str(e), "expected_version": "0.6.0"}
+        return {"success": False, "error": str(e), "expected_version": "0.7.0"}
 
 
 @mcp.tool()
