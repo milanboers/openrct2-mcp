@@ -160,6 +160,10 @@ The agent walks through the tools — `create_ride`, `place_track_segment`, `get
 - If the agent says a track piece is invalid, it ignored the `valid_pieces` list. Tell it to re-read the last tool response.
 - The server reads the track straight from the game, so you can build **multiple coasters** in one session, **continue a coaster from a previous session**, or work on a save that already has coasters — just point the agent at the ride you want to keep building.
 
+## Development smoke test
+
+To check the full MCP-to-game flow, load the bundled empty sandbox, unpause the game, and run `uv run python scripts/smoke_test.py`. Confirm the prompt to build and test a small coaster. The script refuses parks with existing rides, waits up to 120 seconds for a moving train and ratings (`--timeout` changes this), and leaves the coaster in the park. It doesn't restart the game or delete rides.
+
 ## Troubleshooting
 
 | Problem | Fix |
