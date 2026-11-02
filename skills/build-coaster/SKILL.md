@@ -37,6 +37,8 @@ The server uses **Alignment Snapping**. You only select track types; coordinates
 
 The server returns an image and a text-based map of actual track-element tiles. Numbers are element base heights in game Z units; multiple heights on one tile are separated by `/`. The shaded tiles in the image show the same footprint; the connecting lines are approximate. Occupied tiles are not collision-clearance data, and an empty tile may still be obstructed.
 
+Use `get_map_area` to inspect nearby terrain and objects, and `check_track_segment` to ask the game whether a compatible piece fits before placing it. A successful check is not a reservation: the park may change before placement.
+
 For a planned run of pieces, use `place_track_sequence` with a list of objects such as `{"track_type": "Up25", "has_chain_lift": true}`. The server checks each piece against the latest valid list and returns one final state and image. It stops at the first failure without rolling back earlier pieces. `placed_count` counts confirmed placements, but a failed piece may also have been placed; inspect the final state and `failed_index` before retrying. Use single-piece placement when the next move depends on the image or endpoint.
 
 ### 1. The Station Sequence

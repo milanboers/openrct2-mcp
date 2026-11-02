@@ -16,12 +16,14 @@ Three pieces talk to each other:
 
 - `create_ride`: Create a new coaster and place the first station piece.
 - `place_track_segment`: Add a track segment. `valid_pieces` lists compatible types; the game can still reject a placement due to terrain or obstructions.
+- `check_track_segment`: Ask the game whether a piece can be placed at the current endpoint without building it. The result is not a reservation.
+- `get_map_area`: Inspect nearby terrain and map elements within a bounded radius.
 - `place_track_sequence`: Place several segments in order, returning one final state and image. Stops at the first failure; earlier segments remain placed, and the failed segment may also have been placed. Inspect the final state before retrying. Each segment accepts `track_type`, `has_chain_lift`, `brake_speed`, and `seat_rotation`.
 - `undo_last_piece`: Remove the last placed segment.
 - `get_coaster_state`: Get track history, actual track-element tiles and base heights, and a visualization. The footprint is not collision-clearance data; the image's connecting lines are approximate.
 - `place_entrance_exit`: Add entrance/exit to the station.
 - `start_ride_test`: Start test mode for ratings.
-- `get_ride_stats`: Get test status, pause state, train velocities, and ratings. Ratings use the game's decimal scale (e.g. 6.52) and are `null` until calculated; velocities are raw game values.
+- `get_ride_stats`: Get test status, pause state, train velocities, ratings, speed, length, duration, G-forces, and drops. Ratings use the game's decimal scale (e.g. 6.52) and are `null` until calculated; vehicle velocities are raw game values.
 - `list_all_rides`: List existing rides.
 - `get_plugin_info`: Check the loaded plugin version against the server's expected version.
 - `delete_ride`: Demolish one ride by ID.

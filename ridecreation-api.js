@@ -1,4 +1,4 @@
-var PLUGIN_VERSION = "0.3.0";
+var PLUGIN_VERSION = "0.4.0";
 
 function main() {
     "use strict";
@@ -504,6 +504,41 @@ function main() {
                 });
                 break;
 
+            case "getMapArea":
+                var params = request.params || {};
+                if (!Number.isInteger(params.x) || !Number.isInteger(params.y) ||
+                    !Number.isInteger(params.radius) || params.radius < 0 || params.radius > 8 ||
+                    params.x < 0 || params.y < 0 || params.x >= map.size.x || params.y >= map.size.y) {
+                    callback({ success: false, error: "Invalid map centre or radius (0–8)" });
+                    return;
+                }
+                var tiles = [];
+                for (var mx = Math.max(0, params.x - params.radius); mx <= Math.min(map.size.x - 1, params.x + params.radius); mx++) {
+                    for (var my = Math.max(0, params.y - params.radius); my <= Math.min(map.size.y - 1, params.y + params.radius); my++) {
+                        var mapTile = map.getTile(mx, my);
+                        if (!mapTile) continue;
+                        var mapElements = [];
+                        for (var mi = 0; mi < mapTile.numElements; mi++) {
+                            var mapElement = mapTile.elements[mi];
+                            var entry = {
+                                type: mapElement.type,
+                                base_z: mapElement.baseZ / 8,
+                                clearance_z: mapElement.clearanceZ / 8,
+                                is_ghost: mapElement.isGhost
+                            };
+                            if (mapElement.type === "surface") {
+                                entry.slope = mapElement.slope;
+                                entry.water_height_raw = mapElement.waterHeight;
+                            }
+                            if (mapElement.type === "track") entry.ride_id = mapElement.ride;
+                            mapElements.push(entry);
+                        }
+                        tiles.push({ x: mx, y: my, elements: mapElements });
+                    }
+                }
+                callback({ success: true, payload: { x: params.x, y: params.y, radius: params.radius, tiles: tiles } });
+                break;
+
             case "getPluginInfo":
                 callback({ success: true, payload: { version: PLUGIN_VERSION } });
                 break;
@@ -622,7 +657,16 @@ function main() {
                     excitement: ratingsAvailable ? ride.excitement / 100 : null,
                     intensity: ratingsAvailable ? ride.intensity / 100 : null,
                     nausea: ratingsAvailable ? ride.nausea / 100 : null,
-                    vehicles: vehicles
+                    vehicles: vehicles,
+                    max_speed_mph: ratingsAvailable ? ride.maxSpeed : null,
+                    average_speed_mph: ratingsAvailable ? ride.averageSpeed : null,
+                    ride_time_seconds: ratingsAvailable ? ride.rideTime : null,
+                    ride_length_metres: ratingsAvailable ? ride.rideLength : null,
+                    max_positive_vertical_g: ratingsAvailable ? ride.maxPositiveVerticalGs : null,
+                    max_negative_vertical_g: ratingsAvailable ? ride.maxNegativeVerticalGs : null,
+                    max_lateral_g: ratingsAvailable ? ride.maxLateralGs : null,
+                    drops: ratingsAvailable ? ride.numDrops : null,
+                    lift_hills: ratingsAvailable ? ride.numLiftHills : null
                 };
                 callback({
                     success: true,
@@ -630,6 +674,7 @@ function main() {
                 });
                 break;
 
+            case "queryTrackPiece":
             case "placeTrackPiece":
                 // Required parameters:
                 // tileCoordinateX, tileCoordinateY, tileCoordinateZ, direction, ride,
@@ -687,6 +732,25 @@ function main() {
                     trackPlaceFlags: flags,
                     isFromTrackDesign: request.params.isFromTrackDesign
                 };
+                if (request.endpoint === "queryTrackPiece") {
+                    context.queryAction("trackplace", trackPlaceArgs, function (result) {
+                        if (!result) {
+                            callback({ success: false, error: "Track query returned no result" });
+                            return;
+                        }
+                        callback({
+                            success: true,
+                            payload: {
+                                placeable: !result.error,
+                                error: result.error || null,
+                                error_title: result.errorTitle || null,
+                                error_message: result.errorMessage || null,
+                                cost: typeof result.cost === "number" ? result.cost : null
+                            }
+                        });
+                    });
+                    return;
+                }
                 context.executeAction("trackplace", trackPlaceArgs, function(result) {
                     if (!result || (result.error && result.error !== "")) {
                         var errMsg = "Failed to place track piece";

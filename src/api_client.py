@@ -143,8 +143,9 @@ class OpenRCT2API:
         track_place_flags: int = 0,
         is_from_track_design: bool = True,
         has_chain_lift: Optional[bool] = None,
+        query: bool = False,
     ) -> dict[str, Any]:
-        """Place a track piece."""
+        """Place or non-mutatingly query a track piece."""
         params = {
             "ride": ride_id,
             "tileCoordinateX": tile_coordinate_x,
@@ -162,7 +163,7 @@ class OpenRCT2API:
         if has_chain_lift is not None:
             params["hasChainLift"] = has_chain_lift
 
-        result = self._send_request("placeTrackPiece", params)
+        result = self._send_request("queryTrackPiece" if query else "placeTrackPiece", params)
         if not isinstance(result, dict):
             raise APIError("Unexpected response format from placeTrackPiece")
         return result
@@ -212,6 +213,12 @@ class OpenRCT2API:
         result = self._send_request("getRideStats", {"rideId": ride_id})
         if not isinstance(result, dict):
             raise APIError("Unexpected response format from getRideStats")
+        return result
+
+    def get_map_area(self, x: int, y: int, radius: int) -> dict[str, Any]:
+        result = self._send_request("getMapArea", {"x": x, "y": y, "radius": radius})
+        if not isinstance(result, dict):
+            raise APIError("Unexpected response format from getMapArea")
         return result
 
     def get_plugin_info(self) -> dict[str, Any]:

@@ -8,6 +8,8 @@ from mcp_server import (
     create_ride,
     generate_coaster_image,
     generate_height_map,
+    check_track_segment,
+    get_map_area,
     place_track_segment,
     place_track_sequence,
     TrackSegment,
@@ -274,14 +276,30 @@ class TestCoasterTools:
             result: dict[str, Any] = get_ride_stats(ride_id=1)
             assert result["excitement"] == 5.0
 
+    def test_check_track_segment_queries_without_placing(self) -> None:
+        with patch.object(api_client, 'get_valid_next_pieces', return_value={
+            'validPieces': [6], 'position': {'x': 10, 'y': 20, 'z': 14, 'direction': 0},
+        }), patch.object(api_client, 'place_track_piece', return_value={'placeable': False, 'error_message': 'Blocked'}) as place, \
+             patch('mcp_server._get_ride_type', return_value=52):
+            result = check_track_segment(1, 'FlatToUp25', has_chain_lift=True)
+
+            assert result == {'placeable': False, 'error_message': 'Blocked'}
+            assert place.call_args.kwargs['query'] is True
+            assert place.call_args.kwargs['has_chain_lift'] is True
+
+    def test_get_map_area(self) -> None:
+        with patch.object(api_client, 'get_map_area', return_value={'tiles': []}) as area:
+            assert get_map_area(10, 20, 2) == {'tiles': []}
+            area.assert_called_once_with(10, 20, 2)
+
     def test_delete_ride(self) -> None:
         with patch.object(api_client, 'delete_ride', return_value={'rideId': 1}) as delete:
             assert delete_ride(1) == {'success': True, 'ride_id': 1}
             delete.assert_called_once_with(1)
 
     def test_get_plugin_info(self) -> None:
-        with patch.object(api_client, 'get_plugin_info', return_value={'version': '0.3.0'}):
-            assert get_plugin_info() == {'version': '0.3.0', 'expected_version': '0.3.0', 'matches': True}
+        with patch.object(api_client, 'get_plugin_info', return_value={'version': '0.4.0'}):
+            assert get_plugin_info() == {'version': '0.4.0', 'expected_version': '0.4.0', 'matches': True}
 
     def test_list_rides_failure_is_not_empty_list(self) -> None:
         from api_client import APIError

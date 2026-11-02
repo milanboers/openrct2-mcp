@@ -415,7 +415,9 @@ class InvalidTrackType(APIError):
     pass
 
 
-def _place_track_segment(ride_id: int, ride_type: int, segment: TrackSegment) -> None:
+def _place_track_segment(
+    ride_id: int, ride_type: int, segment: TrackSegment, *, query: bool = False
+) -> dict[str, Any]:
     state = api_client.get_valid_next_pieces(ride_id)
     if state.get("isCircuitComplete"):
         raise APIError("Circuit is already complete")
@@ -425,7 +427,8 @@ def _place_track_segment(ride_id: int, ride_type: int, segment: TrackSegment) ->
     position = state.get("position")
     if not position:
         raise APIError("Game did not return a track placement position")
-    api_client.place_track_piece(
+    options = {"query": True} if query else {}
+    return api_client.place_track_piece(
         ride_id=ride_id,
         tile_coordinate_x=position["x"],
         tile_coordinate_y=position["y"],
@@ -436,7 +439,39 @@ def _place_track_segment(ride_id: int, ride_type: int, segment: TrackSegment) ->
         brake_speed=segment.brake_speed,
         seat_rotation=segment.seat_rotation,
         has_chain_lift=segment.has_chain_lift,
+        **options,
     )
+
+
+@mcp.tool()
+def check_track_segment(
+    ride_id: int, track_type: str, brake_speed: int = 0,
+    seat_rotation: int = 0, has_chain_lift: bool = False,
+) -> dict[str, Any]:
+    """Query whether a compatible piece can be placed at the current endpoint.
+
+    Does not place track. A successful query is not a reservation; the park may
+    change before placement. Game errors include the title and message if available.
+    """
+    try:
+        segment = TrackSegment(track_type=track_type, brake_speed=brake_speed,
+                               seat_rotation=seat_rotation, has_chain_lift=has_chain_lift)
+        return _place_track_segment(ride_id, _get_ride_type(ride_id), segment, query=True)
+    except APIError as e:
+        return {"success": False, "error": str(e)}
+
+
+@mcp.tool()
+def get_map_area(x: int, y: int, radius: int = 4) -> dict[str, Any]:
+    """Get terrain and map elements within 0–8 tiles of a map centre.
+
+    Base and clearance Z are in track height units (8 game coordinates).
+    Water height is the raw OpenRCT2 value. This is not a placement guarantee.
+    """
+    try:
+        return api_client.get_map_area(x, y, radius)
+    except APIError as e:
+        return {"success": False, "error": str(e)}
 
 
 @mcp.tool()
@@ -618,10 +653,10 @@ def get_plugin_info() -> dict[str, Any]:
     """
     try:
         info = api_client.get_plugin_info()
-        return {"version": info.get("version"), "expected_version": "0.3.0",
-                "matches": info.get("version") == "0.3.0"}
+        return {"version": info.get("version"), "expected_version": "0.4.0",
+                "matches": info.get("version") == "0.4.0"}
     except APIError as e:
-        return {"success": False, "error": str(e), "expected_version": "0.3.0"}
+        return {"success": False, "error": str(e), "expected_version": "0.4.0"}
 
 
 @mcp.tool()

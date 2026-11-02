@@ -208,6 +208,30 @@ assert(testResult.error === "Failed to start ride test: 65535", "startRideTest f
 actionHandlers["ridesetstatus"] = (args, cb) => cb({});
 assert(request("startRideTest", { rideId: 10 }).success === true, "startRideTest reports success");
 
+// Querying track uses the same arguments without executing a placement.
+let queried = null;
+context.queryAction = (name, args, cb) => { queried = { name, args }; cb({ error: 1, errorTitle: "Can't build", errorMessage: "Obstructed" }); };
+const trackArgs = { ride: 1, tileCoordinateX: 10, tileCoordinateY: 11, tileCoordinateZ: 14,
+    direction: 0, trackType: 6, rideType: 52, colour: 0, brakeSpeed: 0, seatRotation: 0,
+    trackPlaceFlags: 0, isFromTrackDesign: true, hasChainLift: true };
+let query = request("queryTrackPiece", trackArgs);
+assert(query.success && !query.payload.placeable && query.payload.error_message === "Obstructed",
+    "track query returns the game's rejection");
+assert(queried.name === "trackplace" && queried.args.x === 320 && queried.args.trackPlaceFlags === 1,
+    "track query uses the track placement coordinates and flags");
+context.queryAction = (name, args, cb) => cb({ cost: 123 });
+query = request("queryTrackPiece", trackArgs);
+assert(query.payload.placeable && query.payload.cost === 123, "track query reports a permitted piece and cost");
+
+// Bounded map data includes terrain, paths and other rides.
+clearTiles();
+tiles.set("10,11", [{ type: "surface", baseZ: 112, clearanceZ: 120, isGhost: false, slope: 1, waterHeight: 0 },
+    { type: "track", baseZ: 128, clearanceZ: 144, isGhost: false, ride: 5 }]);
+let area = request("getMapArea", { x: 10, y: 11, radius: 0 });
+assert(area.payload.tiles[0].elements[0].base_z === 14 && area.payload.tiles[0].elements[0].slope === 1 &&
+    area.payload.tiles[0].elements[1].ride_id === 5, "map area reports element heights and ride IDs");
+assert(request("getMapArea", { x: 10, y: 11, radius: 9 }).success === false, "map area limits radius");
+
 // Ride statistics distinguish uncalculated ratings from real zero values.
 map.getRide = (id) => id === 10 ? {
     status: "testing", excitement: -1, intensity: 0, nausea: 0, vehicles: [42, 43],
@@ -219,13 +243,19 @@ assert(JSON.stringify(stats.payload) === JSON.stringify({
     ride_status: "testing", game_paused: true, ratings_available: false,
     excitement: null, intensity: null, nausea: null,
     vehicles: [{ id: 42, velocity: 1234 }, { id: 43, velocity: null }],
+    max_speed_mph: null, average_speed_mph: null, ride_time_seconds: null, ride_length_metres: null,
+    max_positive_vertical_g: null, max_negative_vertical_g: null, max_lateral_g: null, drops: null, lift_hills: null,
 }), "uncalculated ratings include test diagnostics and vehicle velocities");
-map.getRide = () => ({ status: "open", excitement: 652, intensity: 430, nausea: 0, vehicles: [] });
+map.getRide = () => ({ status: "open", excitement: 652, intensity: 430, nausea: 0, vehicles: [],
+    maxSpeed: 45, averageSpeed: 20, rideTime: 60, rideLength: 300,
+    maxPositiveVerticalGs: 3.2, maxNegativeVerticalGs: -0.5, maxLateralGs: 1.1, numDrops: 2, numLiftHills: 1 });
 context.paused = false;
 stats = request("getRideStats", { rideId: 10 });
 assert(JSON.stringify(stats.payload) === JSON.stringify({
     ride_status: "open", game_paused: false, ratings_available: true,
     excitement: 6.52, intensity: 4.3, nausea: 0, vehicles: [],
+    max_speed_mph: 45, average_speed_mph: 20, ride_time_seconds: 60, ride_length_metres: 300,
+    max_positive_vertical_g: 3.2, max_negative_vertical_g: -0.5, max_lateral_g: 1.1, drops: 2, lift_hills: 1,
 }), "calculated ratings use game-scale values and preserve zero");
 map.getRide = () => null;
 assert(request("getRideStats", { rideId: 10 }).error === "Ride not found", "missing ride reports an error");
