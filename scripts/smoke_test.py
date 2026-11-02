@@ -47,6 +47,8 @@ async def call(client: Client, tool_name: str, **arguments: Any) -> Any:
             if isinstance(value, dict) and value.get("success") is False:
                 raise RuntimeError(f"{tool_name} failed: {json.dumps(value)}")
             return value
+    if tool_name == "list_all_rides" and not result.content and not result.is_error:
+        return []
     raise RuntimeError(f"{tool_name} returned no text result")
 
 

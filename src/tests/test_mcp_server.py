@@ -6,6 +6,7 @@ from typing import Any
 
 from mcp_server import (
     create_ride,
+    generate_coaster_image,
     place_track_segment,
     place_track_sequence,
     TrackSegment,
@@ -15,9 +16,24 @@ from mcp_server import (
     start_ride_test,
     get_ride_stats,
     delete_all_rides,
+    delete_ride,
+    get_plugin_info,
     list_all_rides,
     api_client
 )
+
+
+def test_coaster_image_draws_turns_as_curves() -> None:
+    from io import BytesIO
+    from PIL import Image
+
+    piece = {'x': 10, 'y': 10, 'z': 14, 'direction': 0, 'nextDirection': 3, 'trackType': 16}
+    endpoint = {'x': 7, 'y': 7, 'z': 14}
+    curved = Image.open(BytesIO(generate_coaster_image([piece], endpoint).data))
+    straight = Image.open(BytesIO(generate_coaster_image([{**piece, 'trackType': 0}], endpoint).data))
+
+    assert curved.size == straight.size
+    assert curved.tobytes() != straight.tobytes()
 
 
 class TestCreateRide:
@@ -244,6 +260,21 @@ class TestCoasterTools:
             mock_stats.return_value = {"excitement": 5.0}
             result: dict[str, Any] = get_ride_stats(ride_id=1)
             assert result["excitement"] == 5.0
+
+    def test_delete_ride(self) -> None:
+        with patch.object(api_client, 'delete_ride', return_value={'rideId': 1}) as delete:
+            assert delete_ride(1) == {'success': True, 'ride_id': 1}
+            delete.assert_called_once_with(1)
+
+    def test_get_plugin_info(self) -> None:
+        with patch.object(api_client, 'get_plugin_info', return_value={'version': '0.2.0'}):
+            assert get_plugin_info() == {'version': '0.2.0', 'expected_version': '0.2.0', 'matches': True}
+
+    def test_list_rides_failure_is_not_empty_list(self) -> None:
+        from api_client import APIError
+
+        with patch.object(api_client, 'list_all_rides', side_effect=APIError('Disconnected')):
+            assert list_all_rides() == {'success': False, 'error': 'Disconnected'}
 
     def test_delete_all_rides(self) -> None:
         with patch.object(api_client, 'delete_all_rides') as mock_del:

@@ -36,7 +36,9 @@ class FakeClient:
             "start_ride_test": {"success": True},
             "get_ride_stats": {"ratings_available": True, "vehicles": [{"velocity": 100}]},
         }
-        return SimpleNamespace(content=[SimpleNamespace(type="text", text=json.dumps(responses[name]))])
+        if name == "list_all_rides" and not self.rides:
+            return SimpleNamespace(content=[], is_error=False)
+        return SimpleNamespace(content=[SimpleNamespace(type="text", text=json.dumps(responses[name]))], is_error=False)
 
 
 def test_smoke_test_builds_and_tests_a_coaster(capsys):

@@ -167,10 +167,27 @@ def generate_coaster_image(
         c1 = to_img_center(p1[0], p1[1])
         c2 = to_img_center(p2[0], p2[1])
 
-        # Draw thick line for the track piece
-        draw.line([c1, c2], fill=get_color(p1[2]), width=12)
-        # Draw a slightly thinner highlights line for a "railed" look
-        draw.line([c1, c2], fill=(200, 200, 200), width=2)
+        # Curved pieces need more than a straight line between tile origins.
+        # Approximate their centreline using the entry and exit directions;
+        # this is not an exact track footprint.
+        piece = history[i] if i < len(history) else {}
+        turn_types = {16, 17, 22, 23, 42, 43, 44, 45}
+        line = [c1, c2]
+        if piece.get("trackType") in turn_types and "nextDirection" in piece:
+            directions = [(-1, 0), (0, 1), (1, 0), (0, -1)]
+            start_direction = directions[piece["direction"] % 4]
+            end_direction = directions[piece["nextDirection"] % 4]
+            distance = max(abs(c2[0] - c1[0]), abs(c2[1] - c1[1])) * 0.55
+            control1 = (c1[0] + start_direction[0] * distance, c1[1] + start_direction[1] * distance)
+            control2 = (c2[0] - end_direction[0] * distance, c2[1] - end_direction[1] * distance)
+            line = []
+            for step in range(21):
+                t = step / 20
+                u = 1 - t
+                line.append(tuple(round(u**3 * c1[j] + 3 * u**2 * t * control1[j]
+                                        + 3 * u * t**2 * control2[j] + t**3 * c2[j]) for j in (0, 1)))
+        draw.line(line, fill=get_color(p1[2]), width=12)
+        draw.line(line, fill=(200, 200, 200), width=2)
 
     # 2. Draw nodes (boxes) on top
     for i, (px, py, pz, ptype) in enumerate(points):
@@ -626,6 +643,31 @@ def get_ride_stats(ride_id: int) -> dict[str, Any]:
 
 
 @mcp.tool()
+def get_plugin_info() -> dict[str, Any]:
+    """Report the loaded plugin version and whether it matches this server.
+
+    Older plugins do not support this endpoint; an error can mean the plugin
+    needs updating or the game is unavailable.
+    """
+    try:
+        info = api_client.get_plugin_info()
+        return {"version": info.get("version"), "expected_version": "0.2.0",
+                "matches": info.get("version") == "0.2.0"}
+    except APIError as e:
+        return {"success": False, "error": str(e), "expected_version": "0.2.0"}
+
+
+@mcp.tool()
+def delete_ride(ride_id: int) -> dict[str, Any]:
+    """Permanently demolish one ride by ID, including its track and vehicles."""
+    try:
+        api_client.delete_ride(ride_id)
+        return {"success": True, "ride_id": ride_id}
+    except APIError as e:
+        return {"success": False, "error": str(e), "ride_id": ride_id}
+
+
+@mcp.tool()
 def delete_all_rides() -> dict[str, Any]:
     """
     Delete all rides and clear state.
@@ -639,7 +681,7 @@ def delete_all_rides() -> dict[str, Any]:
 
 
 @mcp.tool()
-def list_all_rides() -> list[dict[str, Any]]:
+def list_all_rides() -> Any:
     """
     List all rides. Each ride includes its id, name, numeric type, and a
     human-readable ride_type_name (e.g. "Wooden Roller Coaster").
@@ -653,7 +695,7 @@ def list_all_rides() -> list[dict[str, Any]]:
         return rides
     except APIError as e:
         logger.error(f"API error listing rides: {e}")
-        return []
+        return {"success": False, "error": str(e)}
 
 
 def main() -> None:

@@ -183,6 +183,17 @@ assert(connHandler != null, "plugin starts and listens");
 // Tests
 // ---------------------------------------------------------------------------
 
+// Version and targeted ride demolition.
+assert(request("getPluginInfo").payload.version === global.__plugin.version, "plugin reports its registered version");
+let demolished = null;
+actionHandlers["ridedemolish"] = (args, cb) => { demolished = args; cb({}); };
+assert(request("deleteRide", { rideId: 10 }).payload.rideId === 10 && demolished.ride === 10,
+    "deleteRide demolishes only the requested ride");
+actionHandlers["ridedemolish"] = (args, cb) => cb({ error: 1, errorMessage: "Ride not found" });
+assert(request("deleteRide", { rideId: 99 }).error === "Failed to delete ride: Ride not found",
+    "deleteRide returns game errors");
+assert(request("deleteRide", {}).success === false, "deleteRide requires a ride ID");
+
 // Test-mode errors expose the game's message, with a numeric fallback.
 actionHandlers["ridesetstatus"] = (args, cb) => {
     assert(args.ride === 10 && args.status === 2, "startRideTest requests testing mode");

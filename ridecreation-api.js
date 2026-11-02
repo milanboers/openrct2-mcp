@@ -1,3 +1,5 @@
+var PLUGIN_VERSION = "0.2.0";
+
 function main() {
     "use strict";
 
@@ -499,6 +501,26 @@ function main() {
                 callback({
                     success: true,
                     payload: result
+                });
+                break;
+
+            case "getPluginInfo":
+                callback({ success: true, payload: { version: PLUGIN_VERSION } });
+                break;
+
+            case "deleteRide":
+                if (!request.params || typeof request.params.rideId !== "number") {
+                    callback({ success: false, error: "Missing or invalid parameter: rideId" });
+                    return;
+                }
+                var deleteRideId = request.params.rideId;
+                context.executeAction("ridedemolish", { ride: deleteRideId, modifyType: 0 }, function (result) {
+                    if (!result || result.error) {
+                        var detail = result && (result.errorMessage || result.errorTitle || result.error);
+                        callback({ success: false, error: "Failed to delete ride: " + (detail || "Unknown error") });
+                    } else {
+                        callback({ success: true, payload: { rideId: deleteRideId } });
+                    }
                 });
                 break;
 
@@ -1278,7 +1300,7 @@ function main() {
 // Register the plugin
 registerPlugin({
     name: "Ride Creation API Plugin - modified",
-    version: "0.1",
+    version: PLUGIN_VERSION,
     authors: ["Markus", "Milan Boers"],
     type: "intransient",
     licence: "MIT",

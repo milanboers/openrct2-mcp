@@ -214,6 +214,18 @@ class OpenRCT2API:
             raise APIError("Unexpected response format from getRideStats")
         return result
 
+    def get_plugin_info(self) -> dict[str, Any]:
+        result = self._send_request("getPluginInfo")
+        if not isinstance(result, dict):
+            raise APIError("Unexpected response format from getPluginInfo")
+        return result
+
+    def delete_ride(self, ride_id: int) -> dict[str, Any]:
+        result = self._send_request("deleteRide", {"rideId": ride_id})
+        if not isinstance(result, dict):
+            raise APIError("Unexpected response format from deleteRide")
+        return result
+
     def delete_all_rides(self) -> Any:
         """Delete all rides."""
         return self._send_request("deleteAllRides")

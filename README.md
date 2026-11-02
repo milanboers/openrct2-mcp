@@ -23,6 +23,8 @@ Three pieces talk to each other:
 - `start_ride_test`: Start test mode for ratings.
 - `get_ride_stats`: Get test status, pause state, train velocities, and ratings. Ratings use the game's decimal scale (e.g. 6.52) and are `null` until calculated; velocities are raw game values.
 - `list_all_rides`: List existing rides.
+- `get_plugin_info`: Check the loaded plugin version against the server's expected version.
+- `delete_ride`: Demolish one ride by ID.
 - `delete_all_rides`: Clear all rides.
 
 ## Prerequisites
