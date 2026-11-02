@@ -77,10 +77,9 @@ class TestPlaceTrackSegment:
 
             # 1. Setup mocks
             mock_valid_next.return_value = {"validPieces": [0, 1], "position": {"x": 10, "y": 10, "z": 2, "direction": 0}}
-            mock_hist.side_effect = [
-                {"history": []},
-                {"history": [{"x": 10, "y": 10, "z": 2, "direction": 0, "trackType": 0, "nextX": 11, "nextY": 10, "nextZ": 2, "nextDirection": 0}]}
-            ]
+            mock_hist.return_value = {
+                "history": [{"x": 10, "y": 10, "z": 2, "direction": 0, "trackType": 0, "nextX": 11, "nextY": 10, "nextZ": 2, "nextDirection": 0}]
+            }
             mock_list.return_value = [{"id": 1, "type": 52}]
             
             # 2. Setup mock for the actual placement
@@ -105,6 +104,34 @@ class TestPlaceTrackSegment:
             assert result[0]["current_endpoint"]["x"] == 11
             assert "height_map" in result[0]
             mock_place.assert_called_once()
+
+
+    @pytest.mark.parametrize('failure', ['complete', 'invalid', 'placement'])
+    def test_place_track_segment_failure(self, failure: str) -> None:
+        from api_client import APIError
+
+        with patch.object(api_client, 'get_valid_next_pieces') as valid, \
+             patch.object(api_client, 'place_track_piece') as place, \
+             patch('mcp_server._get_ride_type', return_value=52), \
+             patch('mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']):
+            valid.return_value = {
+                'validPieces': [] if failure == 'invalid' else [0],
+                'isCircuitComplete': failure == 'complete',
+                'position': {'x': 10, 'y': 20, 'z': 14, 'direction': 0},
+            }
+            if failure == 'placement':
+                place.side_effect = APIError('Location occupied')
+
+            result = place_track_segment(1, 'Flat')
+
+            summary = result[0] if isinstance(result, list) else result
+            assert summary['success'] is False
+            assert summary['error_message'] == {
+                'complete': 'Circuit is already complete',
+                'invalid': 'Invalid track type at this position: Flat',
+                'placement': 'Location occupied',
+            }[failure]
+            assert place.call_count == (1 if failure == 'placement' else 0)
 
 
 class TestPlaceTrackSequence:

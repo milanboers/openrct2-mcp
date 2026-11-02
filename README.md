@@ -15,7 +15,7 @@ Three pieces talk to each other:
 ## Tools
 
 - `create_ride`: Create a new coaster and place the first station piece.
-- `place_track_segment`: Add a track segment (validates against game rules).
+- `place_track_segment`: Add a track segment. `valid_pieces` lists compatible types; the game can still reject a placement due to terrain or obstructions.
 - `place_track_sequence`: Place several segments in order, returning one final state and image. Stops at the first failure; earlier segments remain placed, and the failed segment may also have been placed. Inspect the final state before retrying. Each segment accepts `track_type`, `has_chain_lift`, `brake_speed`, and `seat_rotation`.
 - `undo_last_piece`: Remove the last placed segment.
 - `get_coaster_state`: Get the current authoritative state and visualization.

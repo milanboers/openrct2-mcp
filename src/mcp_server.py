@@ -419,6 +419,43 @@ def create_ride(
         return {"success": False, "error": str(e)}
 
 
+class TrackSegment(BaseModel):
+    """A single track piece and its placement options."""
+
+    track_type: str
+    has_chain_lift: bool = False
+    brake_speed: int = 0
+    seat_rotation: int = 0
+
+
+class InvalidTrackType(APIError):
+    pass
+
+
+def _place_track_segment(ride_id: int, ride_type: int, segment: TrackSegment) -> None:
+    state = api_client.get_valid_next_pieces(ride_id)
+    if state.get("isCircuitComplete"):
+        raise APIError("Circuit is already complete")
+    track_id = TRACK_NAME_TO_ID.get(segment.track_type)
+    if track_id is None or track_id not in state.get("validPieces", []):
+        raise InvalidTrackType(f"Invalid track type at this position: {segment.track_type}")
+    position = state.get("position")
+    if not position:
+        raise APIError("Game did not return a track placement position")
+    api_client.place_track_piece(
+        ride_id=ride_id,
+        tile_coordinate_x=position["x"],
+        tile_coordinate_y=position["y"],
+        tile_coordinate_z=position["z"],
+        direction=position["direction"],
+        track_type=track_id,
+        ride_type=ride_type,
+        brake_speed=segment.brake_speed,
+        seat_rotation=segment.seat_rotation,
+        has_chain_lift=segment.has_chain_lift,
+    )
+
+
 @mcp.tool()
 def place_track_segment(
     ride_id: int,
@@ -427,88 +464,26 @@ def place_track_segment(
     seat_rotation: int = 0,
     has_chain_lift: bool = False,
 ) -> Any:
-    """
-    Place a track segment.
-    track_type must be a semantic name (e.g., 'Flat', 'Up25', 'FlatToUp25').
-    This tool validates that the piece is legally allowed by the game engine before placing.
+    """Place a track segment using a name from the latest valid_pieces list.
+
+    Compatible pieces may still be rejected by the game due to obstructions.
+    Inspect the final state after a placement error before retrying.
     """
     try:
-        # 1. Fetch current state to validate selection
-        current_state_list = get_coaster_state(ride_id)
-        if isinstance(current_state_list, dict) and not current_state_list.get(
-            "success"
-        ):
-            return current_state_list
-
-        current_state = current_state_list[0]  # type: ignore
-        ride_type = current_state.get("ride_type", 52)
-
-        valid_pieces = current_state.get("valid_pieces", [])  # type: ignore
-        valid_names = [p.get("name") if isinstance(p, dict) else p for p in valid_pieces]
-        if track_type not in valid_names:
-            error_msg = f"Invalid track type '{track_type}'. You MUST choose from the valid_pieces list: {[n for n in valid_names if n]}."
-            logger.warning(f"Agent attempted invalid move: {error_msg}")
-            return {
-                "success": False,
-                "error_message": error_msg,
-                "ride_id": ride_id,
-                "pieces": current_state["pieces"],
-                "current_endpoint": current_state["current_endpoint"],
-                "valid_pieces": valid_pieces,
-                "is_circuit_complete": False,
-            }
-
-        # Translate track name to ID
-        track_id = TRACK_NAME_TO_ID.get(track_type)
-        if track_id is None:
-            # This should ideally not happen if it's in valid_pieces, but for safety:
-            return {
-                "success": False,
-                "error_message": f"Unknown track type name: {track_type}",
-            }
-
-        endpoint = current_state["current_endpoint"]
-
-        # 2. Proceed with placement
-        api_client.place_track_piece(
-            ride_id=ride_id,
-            tile_coordinate_x=endpoint["x"],
-            tile_coordinate_y=endpoint["y"],
-            tile_coordinate_z=endpoint["z"],
-            direction=endpoint["direction"],
-            track_type=track_id,
-            ride_type=ride_type,
-            colour=0,
+        segment = TrackSegment(
+            track_type=track_type,
             brake_speed=brake_speed,
             seat_rotation=seat_rotation,
-            track_place_flags=0,
-            is_from_track_design=True,
             has_chain_lift=has_chain_lift,
         )
-
-        # 3. Return the full authoritative state
-        return get_coaster_state(ride_id)
-
+        _place_track_segment(ride_id, _get_ride_type(ride_id), segment)
     except APIError as e:
-        error_msg = str(e)
-        logger.error(f"Placement FAILED: {error_msg}")
-        try:
-            state = get_coaster_state(ride_id)
-            if isinstance(state, list):
-                state[0]["success"] = False
-                state[0]["error_message"] = error_msg
-            return state
-        except Exception:
-            return {"success": False, "error_message": error_msg}
-
-
-class TrackSegment(BaseModel):
-    """A single track piece and its placement options."""
-
-    track_type: str
-    has_chain_lift: bool = False
-    brake_speed: int = 0
-    seat_rotation: int = 0
+        state = get_coaster_state(ride_id)
+        summary = state[0] if isinstance(state, list) else state
+        summary["success"] = False
+        summary["error_message"] = str(e)
+        return summary if isinstance(e, InvalidTrackType) else state
+    return get_coaster_state(ride_id)
 
 
 @mcp.tool()
@@ -530,27 +505,7 @@ def place_track_sequence(
         ride_type = _get_ride_type(ride_id)
         for index, segment in enumerate(segments):
             failed_index = index
-            state = api_client.get_valid_next_pieces(ride_id)
-            if state.get("isCircuitComplete"):
-                raise APIError("Circuit is already complete")
-            track_id = TRACK_NAME_TO_ID.get(segment.track_type)
-            if track_id is None or track_id not in state.get("validPieces", []):
-                raise APIError(f"Invalid track type at this position: {segment.track_type}")
-            position = state.get("position")
-            if not position:
-                raise APIError("Game did not return a track placement position")
-            api_client.place_track_piece(
-                ride_id=ride_id,
-                tile_coordinate_x=position["x"],
-                tile_coordinate_y=position["y"],
-                tile_coordinate_z=position["z"],
-                direction=position["direction"],
-                track_type=track_id,
-                ride_type=ride_type,
-                brake_speed=segment.brake_speed,
-                seat_rotation=segment.seat_rotation,
-                has_chain_lift=segment.has_chain_lift,
-            )
+            _place_track_segment(ride_id, ride_type, segment)
             placed += 1
         failed_index = None
     except APIError as e:
