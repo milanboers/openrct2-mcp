@@ -550,9 +550,13 @@ function main() {
                     status: 2 // 2 means testing.
                 }, function (result) {
                     if (!result || (result.error && result.error !== "")) {
+                        var details = [];
+                        if (result && result.errorTitle) details.push(result.errorTitle);
+                        if (result && result.errorMessage) details.push(result.errorMessage);
+                        if (details.length === 0 && result && result.error) details.push(String(result.error));
                         callback({
                             success: false,
-                            error: "Failed to start ride test: " + (result && result.error ? result.error : "Unknown error")
+                            error: "Failed to start ride test: " + (details.length ? details.join(": ") : "Unknown error")
                         });
                     } else {
                         callback({

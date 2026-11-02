@@ -183,6 +183,20 @@ assert(connHandler != null, "plugin starts and listens");
 // Tests
 // ---------------------------------------------------------------------------
 
+// Test-mode errors expose the game's message, with a numeric fallback.
+actionHandlers["ridesetstatus"] = (args, cb) => {
+    assert(args.ride === 10 && args.status === 2, "startRideTest requests testing mode");
+    cb({ error: 65535, errorTitle: "Can't test ride", errorMessage: "Track is not complete" });
+};
+let testResult = request("startRideTest", { rideId: 10 });
+assert(testResult.error === "Failed to start ride test: Can't test ride: Track is not complete",
+    "startRideTest returns the game's error details");
+actionHandlers["ridesetstatus"] = (args, cb) => cb({ error: 65535 });
+testResult = request("startRideTest", { rideId: 10 });
+assert(testResult.error === "Failed to start ride test: 65535", "startRideTest falls back to the error code");
+actionHandlers["ridesetstatus"] = (args, cb) => cb({});
+assert(request("startRideTest", { rideId: 10 }).success === true, "startRideTest reports success");
+
 // Ride statistics distinguish uncalculated ratings from real zero values.
 map.getRide = (id) => id === 10 ? {
     status: "testing", excitement: -1, intensity: 0, nausea: 0, vehicles: [42, 43],

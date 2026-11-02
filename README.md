@@ -10,7 +10,7 @@ Three pieces talk to each other:
 
 1. **In-game plugin** (`ridecreation-api.js`) — runs inside OpenRCT2 and opens a small TCP server on port `8080`. It places track, validates every piece against the game rules, and reports the ride state.
 2. **MCP server** (Python, this repo) — a plain stdio MCP server. Its tools forward to the game over that TCP connection.
-3. **Your AI client** — Claude Code, Codex, pi (with pi-mcp-adapter), opencode, or any stdio MCP client. It runs the MCP server, loads the `build-coaster` skill, and drives the whole thing.
+3. **Your AI client** — Claude Code, Codex, pi, opencode, or any stdio MCP client. It runs the MCP server, loads the `build-coaster` skill, and drives the whole thing.
 
 ## Tools
 
@@ -29,7 +29,7 @@ Three pieces talk to each other:
 
 - **OpenRCT2** (in-game plugins are enabled by default)
 - **uv** — see [astral.sh/uv](https://docs.astral.sh/uv/)
-- an MCP-capable AI client (Claude Code, Codex, pi with pi-mcp-adapter, opencode, ...)
+- an MCP-capable AI client (Claude Code, Codex, pi, opencode, ...)
 
 ## Setup
 
@@ -42,6 +42,7 @@ Copy `ridecreation-api.js` into your OpenRCT2 `plugin` folder (create the folder
 | macOS | `~/Library/Application Support/OpenRCT2/` |
 | Windows | `Documents/OpenRCT2/` |
 | Linux | `~/.config/OpenRCT2/` |
+| Linux (Flatpak) | `~/.var/app/io.openrct2.OpenRCT2/config/OpenRCT2/` |
 
 So on macOS the file ends up at `~/Library/Application Support/OpenRCT2/plugin/ridecreation-api.js`.
 
@@ -51,7 +52,7 @@ This repo includes a ready-made scenario in `scenarios/sandbox.park`. It's a fla
 
 Prefer your own map? Most scenarios work — two things make it easier:
 
-- **The station spot**: `create_ride` puts the station at tile (67, 66) at ground level — roughly the middle of a 128×128 map — so that one tile needs to be flat and clear. You can pass custom `station_x/y/z` to `create_ride`, but the plugin assumes the default spot when checking if a circuit is complete, so it's easiest to use a map that's flat there.
+- **The station spot**: `create_ride` defaults to tile (67, 66) at ground level — roughly the middle of a 128×128 map — so that tile needs to be flat and clear. You can pass custom `station_x/y/z` to use another location.
 - **The Wooden Roller Coaster**: it's the default ride type and the track validation is tuned for it, so it needs to be researched or available in the scenario. Other ride types can work too, but some track pieces may fail to place.
 
 ### 3. Install the MCP server
@@ -104,15 +105,15 @@ args = ["--directory", "/path/to/openrct2-mcp", "run", "openrct2-mcp"]
 
 Then run `codex` from that folder. Codex only loads `.codex/` project config after you trust the project — approve the prompt when it appears. (Or add it to your user config instead with `codex mcp add openrct2-mcp -- uv --directory /path/to/openrct2-mcp run openrct2-mcp`.)
 
-#### pi (with pi-mcp-adapter)
+#### pi
 
-Pi doesn't support MCP out of the box, but the popular [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter) adds it. Install the adapter and restart Pi:
+Pi supports MCP natively. From the workspace folder, configure the server locally:
 
+```sh
+pi mcp add --local openrct2 -- uv --directory /path/to/openrct2-mcp run openrct2-mcp
 ```
-pi install npm:pi-mcp-adapter
-```
 
-The adapter reads the standard `.mcp.json` file, so the exact same config as Claude Code above just works — if you already created `.mcp.json`, you're done.
+Start pi and trust the project if prompted. If pi is already running, use `/reload` and trust the project if prompted.
 
 #### opencode
 
