@@ -25,6 +25,8 @@ Three pieces talk to each other:
 - `start_ride_test`: Start test mode for ratings.
 - `get_ride_stats`: Get test status, pause state, train velocities, ratings, speed, length, duration, G-forces, and drops. Ratings use the game's decimal scale (e.g. 6.52) and are `null` until calculated; vehicle velocities are raw game values.
 - `list_all_rides`: List existing rides.
+- `get_track_catalog`: Inspect game track descriptors and which types the server supports. The catalog isn't filtered for the current ride.
+- `set_ride_vehicles`: Set the proposed train count or cars per train on a closed ride (the game may apply limits).
 - `get_plugin_info`: Check the loaded plugin version against the server's expected version.
 - `delete_ride`: Demolish one ride by ID.
 - `delete_all_rides`: Clear all rides.

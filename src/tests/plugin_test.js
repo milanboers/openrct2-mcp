@@ -183,6 +183,18 @@ assert(connHandler != null, "plugin starts and listens");
 // Tests
 // ---------------------------------------------------------------------------
 
+// Vehicle settings use the game's ride action and surface its errors.
+let vehicleArgs = null;
+actionHandlers["ridesetvehicle"] = (args, cb) => { vehicleArgs = args; cb({}); };
+let vehicleResult = request("setRideVehicles", { rideId: 4, setting: "cars_per_train", value: 3 });
+assert(vehicleResult.success && vehicleArgs.ride === 4 && vehicleArgs.type === 1 && vehicleArgs.value === 3,
+    "sets the requested cars per train");
+actionHandlers["ridesetvehicle"] = (args, cb) => cb({ error: 1, errorMessage: "Ride must be closed" });
+vehicleResult = request("setRideVehicles", { rideId: 4, setting: "trains", value: 2 });
+assert(vehicleResult.error === "Failed to set ride vehicles: Ride must be closed", "vehicle action reports game errors");
+assert(!request("setRideVehicles", { rideId: 4, setting: "trains", value: 256 }).success,
+    "vehicle setting rejects out-of-range values");
+
 // Version and targeted ride demolition.
 assert(request("getPluginInfo").payload.version === global.__plugin.version, "plugin reports its registered version");
 let demolished = null;

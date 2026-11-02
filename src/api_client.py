@@ -215,6 +215,18 @@ class OpenRCT2API:
             raise APIError("Unexpected response format from getRideStats")
         return result
 
+    def get_track_catalog(self) -> list[dict[str, Any]]:
+        result = self._send_request("getAllTrackSegments")
+        if not isinstance(result, list):
+            raise APIError("Unexpected response format from getAllTrackSegments")
+        return result
+
+    def set_ride_vehicles(self, ride_id: int, setting: str, value: int) -> dict[str, Any]:
+        result = self._send_request("setRideVehicles", {"rideId": ride_id, "setting": setting, "value": value})
+        if not isinstance(result, dict):
+            raise APIError("Unexpected response format from setRideVehicles")
+        return result
+
     def get_map_area(self, x: int, y: int, radius: int) -> dict[str, Any]:
         result = self._send_request("getMapArea", {"x": x, "y": y, "radius": radius})
         if not isinstance(result, dict):

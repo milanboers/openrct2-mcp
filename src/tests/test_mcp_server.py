@@ -21,6 +21,8 @@ from mcp_server import (
     delete_all_rides,
     delete_ride,
     get_plugin_info,
+    set_ride_vehicles,
+    get_track_catalog,
     list_all_rides,
     api_client
 )
@@ -93,6 +95,19 @@ class TestCreateRide:
                 name="Test Coaster",
             )
             mock_place.assert_called_once()
+
+
+    def test_create_ride_station_failure_returns_ride_id(self) -> None:
+        from api_client import APIError
+
+        with patch.object(api_client, 'create_ride', return_value={'rideId': 7}), \
+             patch.object(api_client, 'place_track_piece', side_effect=APIError('Location occupied')):
+            result = create_ride(name='Test Coaster')
+
+        assert result['success'] is False
+        assert result['ride_id'] == 7
+        assert result['error'] == 'Location occupied'
+        assert 'outcome may be unknown' in result['message']
 
 
 class TestPlaceTrackSegment:
@@ -292,14 +307,32 @@ class TestCoasterTools:
             assert get_map_area(10, 20, 2) == {'tiles': []}
             area.assert_called_once_with(10, 20, 2)
 
+    def test_get_track_catalog_identifies_supported_types(self) -> None:
+        with patch.object(api_client, 'get_track_catalog', return_value=[
+            {'type': 0, 'description': 'Straight'}, {'type': 999, 'description': 'Other'},
+        ]):
+            assert get_track_catalog() == [
+                {'type': 0, 'description': 'Straight', 'supported_name': 'Flat'},
+                {'type': 999, 'description': 'Other', 'supported_name': None},
+            ]
+
+    def test_set_ride_vehicles(self) -> None:
+        with patch.object(api_client, 'set_ride_vehicles', return_value={
+            'ride_id': 1, 'setting': 'trains', 'value': 2,
+        }) as set_vehicles:
+            assert set_ride_vehicles(1, 'trains', 2) == {
+                'success': True, 'ride_id': 1, 'setting': 'trains', 'value': 2,
+            }
+            set_vehicles.assert_called_once_with(1, 'trains', 2)
+
     def test_delete_ride(self) -> None:
         with patch.object(api_client, 'delete_ride', return_value={'rideId': 1}) as delete:
             assert delete_ride(1) == {'success': True, 'ride_id': 1}
             delete.assert_called_once_with(1)
 
     def test_get_plugin_info(self) -> None:
-        with patch.object(api_client, 'get_plugin_info', return_value={'version': '0.4.0'}):
-            assert get_plugin_info() == {'version': '0.4.0', 'expected_version': '0.4.0', 'matches': True}
+        with patch.object(api_client, 'get_plugin_info', return_value={'version': '0.5.0'}):
+            assert get_plugin_info() == {'version': '0.5.0', 'expected_version': '0.5.0', 'matches': True}
 
     def test_list_rides_failure_is_not_empty_list(self) -> None:
         from api_client import APIError

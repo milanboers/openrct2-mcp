@@ -1,4 +1,4 @@
-var PLUGIN_VERSION = "0.4.0";
+var PLUGIN_VERSION = "0.5.0";
 
 function main() {
     "use strict";
@@ -494,6 +494,10 @@ function main() {
                         endZ: seg.endZ,
                         beginDirection: seg.beginDirection,
                         endDirection: seg.endDirection,
+                        beginSlope: seg.beginSlope,
+                        endSlope: seg.endSlope,
+                        endX: seg.endX,
+                        endY: seg.endY,
                         beginBank: seg.beginBank,
                         endBank: seg.endBank
                     };
@@ -537,6 +541,31 @@ function main() {
                     }
                 }
                 callback({ success: true, payload: { x: params.x, y: params.y, radius: params.radius, tiles: tiles } });
+                break;
+
+            case "setRideVehicles":
+                var vehicleParams = request.params || {};
+                if (!Number.isInteger(vehicleParams.rideId) ||
+                    (vehicleParams.setting !== "trains" && vehicleParams.setting !== "cars_per_train") ||
+                    !Number.isInteger(vehicleParams.value) || vehicleParams.value < 1 || vehicleParams.value > 255) {
+                    callback({ success: false, error: "Invalid ride ID, vehicle setting, or value (1–255)" });
+                    return;
+                }
+                context.executeAction("ridesetvehicle", {
+                    ride: vehicleParams.rideId,
+                    type: vehicleParams.setting === "trains" ? 0 : 1,
+                    value: vehicleParams.value,
+                    colour: 0
+                }, function (result) {
+                    if (!result || result.error) {
+                        var detail = result && (result.errorMessage || result.errorTitle || result.error);
+                        callback({ success: false, error: "Failed to set ride vehicles: " + (detail || "Unknown error") });
+                    } else {
+                        callback({ success: true, payload: {
+                            ride_id: vehicleParams.rideId, setting: vehicleParams.setting, value: vehicleParams.value
+                        } });
+                    }
+                });
                 break;
 
             case "getPluginInfo":

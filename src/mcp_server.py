@@ -2,7 +2,7 @@
 
 import logging
 import io
-from typing import Any, Optional, Tuple
+from typing import Any, Literal, Optional, Tuple
 from fastmcp import FastMCP
 from fastmcp.utilities.types import Image as MCPImage
 from PIL import Image, ImageDraw
@@ -368,6 +368,7 @@ def create_ride(
     ride_type: Numeric ride type ID from the game. 52 = Wooden Roller Coaster
     (the supported default); see the build-coaster skill for the full table.
     """
+    ride_id: Optional[int] = None
     try:
         # 1. Create the ride via API
         result = api_client.create_ride(
@@ -399,7 +400,14 @@ def create_ride(
 
     except APIError as e:
         logger.error(f"API error creating ride: {e}")
-        return {"success": False, "error": str(e)}
+        failure: dict[str, Any] = {"success": False, "error": str(e)}
+        if ride_id is not None:
+            failure["ride_id"] = ride_id
+            failure["message"] = (
+                "Ride was created; station placement outcome may be unknown. "
+                "Inspect the ride before retrying or deleting it."
+            )
+        return failure
 
 
 class TrackSegment(BaseModel):
@@ -645,6 +653,38 @@ def get_ride_stats(ride_id: int) -> dict[str, Any]:
 
 
 @mcp.tool()
+def get_track_catalog() -> Any:
+    """List the game's track descriptors and which types this server can place.
+
+    This catalog is not filtered for a ride or endpoint. A listed type is not
+    necessarily available for a ride, compatible with its endpoint, or placeable.
+    """
+    try:
+        catalog = api_client.get_track_catalog()
+        for piece in catalog:
+            name = TRACK_TYPES.get(piece.get("type"))
+            piece["supported_name"] = name
+        return catalog
+    except APIError as e:
+        return {"success": False, "error": str(e)}
+
+
+@mcp.tool()
+def set_ride_vehicles(
+    ride_id: int, setting: Literal["trains", "cars_per_train"], value: int
+) -> dict[str, Any]:
+    """Set the proposed train count or cars per train using OpenRCT2's ride action.
+
+    The game checks whether the change is allowed and may limit the effective
+    count based on station length and track layout. Close the ride first.
+    """
+    try:
+        return {"success": True, **api_client.set_ride_vehicles(ride_id, setting, value)}
+    except APIError as e:
+        return {"success": False, "ride_id": ride_id, "error": str(e)}
+
+
+@mcp.tool()
 def get_plugin_info() -> dict[str, Any]:
     """Report the loaded plugin version and whether it matches this server.
 
@@ -653,10 +693,10 @@ def get_plugin_info() -> dict[str, Any]:
     """
     try:
         info = api_client.get_plugin_info()
-        return {"version": info.get("version"), "expected_version": "0.4.0",
-                "matches": info.get("version") == "0.4.0"}
+        return {"version": info.get("version"), "expected_version": "0.5.0",
+                "matches": info.get("version") == "0.5.0"}
     except APIError as e:
-        return {"success": False, "error": str(e), "expected_version": "0.4.0"}
+        return {"success": False, "error": str(e), "expected_version": "0.5.0"}
 
 
 @mcp.tool()
