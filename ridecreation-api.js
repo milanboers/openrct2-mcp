@@ -1,4 +1,4 @@
-var PLUGIN_VERSION = "0.5.0";
+var PLUGIN_VERSION = "0.6.0";
 
 function main() {
     "use strict";
@@ -674,9 +674,20 @@ function main() {
                 var ratingsAvailable = ride.excitement >= 0;
                 var vehicles = ride.vehicles.map(function (id) {
                     var vehicle = map.getEntity(id);
+                    var car = vehicle;
+                    var cars = 0;
+                    var visited = {};
+                    while (car && !visited[car.id]) {
+                        visited[car.id] = true;
+                        cars++;
+                        if (car.nextCarOnTrain === null) break;
+                        if (typeof car.nextCarOnTrain !== "number") { car = null; break; }
+                        car = map.getEntity(car.nextCarOnTrain);
+                    }
                     return {
                         id: id,
-                        velocity: vehicle ? vehicle.velocity : null
+                        velocity: vehicle ? vehicle.velocity : null,
+                        cars: car && car.nextCarOnTrain === null ? cars : null
                     };
                 });
                 var stats = {

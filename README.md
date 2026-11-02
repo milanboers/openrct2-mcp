@@ -23,7 +23,7 @@ Three pieces talk to each other:
 - `get_coaster_state`: Get track history, actual track-element tiles and base heights, and a visualization. The footprint is not collision-clearance data; the image's connecting lines are approximate.
 - `place_entrance_exit`: Add entrance/exit to the station.
 - `start_ride_test`: Start test mode for ratings.
-- `get_ride_stats`: Get test status, pause state, train velocities, ratings, speed, length, duration, G-forces, and drops. Ratings use the game's decimal scale (e.g. 6.52) and are `null` until calculated; vehicle velocities are raw game values.
+- `get_ride_stats`: Get test status, pause state, instantiated trains and car counts, ratings, speed, length, duration, G-forces, and drops. Closed rides may have no instantiated trains. Ratings use the game's decimal scale (e.g. 6.52) and are `null` until calculated; vehicle velocities are raw game values.
 - `list_all_rides`: List existing rides.
 - `get_track_catalog`: Inspect game track descriptors and which types the server supports. The catalog isn't filtered for the current ride.
 - `set_ride_vehicles`: Set the proposed train count or cars per train on a closed ride (the game may apply limits).

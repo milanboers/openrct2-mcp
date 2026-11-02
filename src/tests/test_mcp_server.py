@@ -331,8 +331,8 @@ class TestCoasterTools:
             delete.assert_called_once_with(1)
 
     def test_get_plugin_info(self) -> None:
-        with patch.object(api_client, 'get_plugin_info', return_value={'version': '0.5.0'}):
-            assert get_plugin_info() == {'version': '0.5.0', 'expected_version': '0.5.0', 'matches': True}
+        with patch.object(api_client, 'get_plugin_info', return_value={'version': '0.6.0'}):
+            assert get_plugin_info() == {'version': '0.6.0', 'expected_version': '0.6.0', 'matches': True}
 
     def test_list_rides_failure_is_not_empty_list(self) -> None:
         from api_client import APIError

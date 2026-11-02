@@ -248,13 +248,16 @@ assert(request("getMapArea", { x: 10, y: 11, radius: 9 }).success === false, "ma
 map.getRide = (id) => id === 10 ? {
     status: "testing", excitement: -1, intensity: 0, nausea: 0, vehicles: [42, 43],
 } : null;
-map.getEntity = (id) => id === 42 ? { velocity: 1234 } : null;
+map.getEntity = (id) => ({
+    42: { id: 42, velocity: 1234, nextCarOnTrain: 44 },
+    44: { id: 44, nextCarOnTrain: null },
+})[id] || null;
 context.paused = true;
 let stats = request("getRideStats", { rideId: 10 });
 assert(JSON.stringify(stats.payload) === JSON.stringify({
     ride_status: "testing", game_paused: true, ratings_available: false,
     excitement: null, intensity: null, nausea: null,
-    vehicles: [{ id: 42, velocity: 1234 }, { id: 43, velocity: null }],
+    vehicles: [{ id: 42, velocity: 1234, cars: 2 }, { id: 43, velocity: null, cars: null }],
     max_speed_mph: null, average_speed_mph: null, ride_time_seconds: null, ride_length_metres: null,
     max_positive_vertical_g: null, max_negative_vertical_g: null, max_lateral_g: null, drops: null, lift_hills: null,
 }), "uncalculated ratings include test diagnostics and vehicle velocities");

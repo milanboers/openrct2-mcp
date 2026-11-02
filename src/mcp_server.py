@@ -643,7 +643,9 @@ def get_ride_stats(ride_id: int) -> dict[str, Any]:
     Get ride status, pause state, train velocities, and ratings.
 
     Ratings use the game's decimal scale (e.g. 6.52), and are null until
-    calculated. Vehicle velocities are raw OpenRCT2 values, not mph or km/h.
+    calculated. Vehicles are instantiated trains: each includes its car count
+    when the complete train can be read. Closed rides may have no vehicles.
+    Vehicle velocities are raw OpenRCT2 values, not mph or km/h.
     """
     try:
         return api_client.get_ride_stats(ride_id)
@@ -693,10 +695,10 @@ def get_plugin_info() -> dict[str, Any]:
     """
     try:
         info = api_client.get_plugin_info()
-        return {"version": info.get("version"), "expected_version": "0.5.0",
-                "matches": info.get("version") == "0.5.0"}
+        return {"version": info.get("version"), "expected_version": "0.6.0",
+                "matches": info.get("version") == "0.6.0"}
     except APIError as e:
-        return {"success": False, "error": str(e), "expected_version": "0.5.0"}
+        return {"success": False, "error": str(e), "expected_version": "0.6.0"}
 
 
 @mcp.tool()
