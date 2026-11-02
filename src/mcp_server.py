@@ -93,7 +93,8 @@ def _get_ride_type(ride_id: int) -> int:
 
 
 def generate_coaster_image(
-    history: list[dict[str, Any]], next_endpoint: dict[str, Any]
+    history: list[dict[str, Any]], next_endpoint: dict[str, Any],
+    track_elements: Optional[list[dict[str, Any]]] = None,
 ) -> MCPImage:
     """
     Generate a visual top-down representation of the coaster as an MCP ImageContent.
@@ -111,10 +112,11 @@ def generate_coaster_image(
     if next_endpoint and "x" in next_endpoint:
         points.append((next_endpoint["x"], next_endpoint["y"], next_endpoint["z"], "C"))
 
-    min_x = min(p[0] for p in points)
-    max_x = max(p[0] for p in points)
-    min_y = min(p[1] for p in points)
-    max_y = max(p[1] for p in points)
+    bounds = points + [(e["x"], e["y"], e["z"], "T") for e in track_elements or []]
+    min_x = min(p[0] for p in bounds)
+    max_x = max(p[0] for p in bounds)
+    min_y = min(p[1] for p in bounds)
+    max_y = max(p[1] for p in bounds)
 
     padding = 2
     min_x -= padding
@@ -146,6 +148,11 @@ def generate_coaster_image(
     for y in range(min_y, max_y + 1):
         _, iy = to_img_topleft(0, y)
         draw.line([(0, iy), (width, iy)], fill=(60, 60, 60))
+
+    # Actual track-element tiles are a footprint, not collision clearance.
+    for element in track_elements or []:
+        ix, iy = to_img_topleft(element["x"], element["y"])
+        draw.rectangle([ix + 2, iy + 2, ix + tile_size - 2, iy + tile_size - 2], fill=(70, 70, 90))
 
     # Determine height range for color scaling
     min_z_val = min(p[2] for p in points)
@@ -223,71 +230,29 @@ def generate_coaster_image(
     return MCPImage(data=buf_final.getvalue(), format="png")
 
 
-def generate_height_map(
-    history: list[dict[str, Any]], next_endpoint: dict[str, Any]
-) -> str:
-    """
-    Generate a text-based height map of the coaster.
-    """
-    if not history:
-        return "No track pieces placed yet."
+def generate_height_map(track_elements: Optional[list[dict[str, Any]]]) -> str:
+    """Show actual track-element base heights, not collision clearance."""
+    if track_elements is None:
+        return "Track occupancy unavailable: update the OpenRCT2 plugin."
+    if not track_elements:
+        return "No track elements."
 
-    nodes = []
-    for p in history:
-        nodes.append((p["x"], p["y"], p["z"]))
-    if next_endpoint and "x" in next_endpoint:
-        nodes.append((next_endpoint["x"], next_endpoint["y"], next_endpoint["z"]))
-
-    # Fill in intermediate tiles using simple linear interpolation
-    all_points = []
-    for i in range(len(nodes) - 1):
-        p1 = nodes[i]
-        p2 = nodes[i + 1]
-
-        dx = p2[0] - p1[0]
-        dy = p2[1] - p1[1]
-        steps = max(abs(dx), abs(dy))
-
-        if steps <= 1:
-            all_points.append(p1)
-            continue
-
-        for s in range(steps):
-            tx = p1[0] + round(s * dx / steps)
-            ty = p1[1] + round(s * dy / steps)
-            tz = p1[2] + round(s * (p2[2] - p1[2]) / steps)
-            all_points.append((tx, ty, tz))
-
-    all_points.append(nodes[-1])  # Add the final endpoint
-
-    min_x = min(p[0] for p in all_points)
-    max_x = max(p[0] for p in all_points)
-    min_y = min(p[1] for p in all_points)
-    max_y = max(p[1] for p in all_points)
-
-    grid = {}
-    for x, y, z in all_points:
-        if (x, y) not in grid:
-            grid[(x, y)] = []
-        if z not in grid[(x, y)]:
-            grid[(x, y)].append(z)
-
-    lines = ["Height Map (z-values):"]
-    header = " " * 5 + "".join(f"{x:4}" for x in range(min_x, max_x + 1))
-    lines.append(header)
-    lines.append(" " * 5 + "-" * (4 * (max_x - min_x + 1)))
-
+    grid: dict[tuple[int, int], set[float]] = {}
+    for element in track_elements:
+        grid.setdefault((element["x"], element["y"]), set()).add(element["z"])
+    min_x = min(x for x, _ in grid)
+    max_x = max(x for x, _ in grid)
+    min_y = min(y for _, y in grid)
+    max_y = max(y for _, y in grid)
+    labels = {key: "/".join(f"{z:g}" for z in sorted(heights)) for key, heights in grid.items()}
+    width = max(4, max(len(label) for label in labels.values()) + 1, len(str(min_x)) + 1, len(str(max_x)) + 1)
+    lines = ["Track-element base heights (not collision clearance):"]
+    lines.append(" " * 5 + "".join(f"{x:>{width}}" for x in range(min_x, max_x + 1)))
+    lines.append(" " * 5 + "-" * (width * (max_x - min_x + 1)))
     for y in range(min_y, max_y + 1):
         row = [f"{y:3} |"]
-        for x in range(min_x, max_x + 1):
-            heights = grid.get((x, y))
-            if heights:
-                val = str(heights[-1])  # Show the most recent height if multiple
-                row.append(f"{val:>4}")
-            else:
-                row.append("   .")
+        row.extend(f"{labels.get((x, y), '.'):>{width}}" for x in range(min_x, max_x + 1))
         lines.append("".join(row))
-
     return "\n".join(lines)
 
 
@@ -351,9 +316,9 @@ def format_coaster_state(
         }
 
     # Generate coaster image visualization
-    coaster_image = generate_coaster_image(history, next_endpoint)
-    # Generate height map text
-    height_map = generate_height_map(history, next_endpoint)
+    track_elements = api_payload.get("trackElements")
+    coaster_image = generate_coaster_image(history, next_endpoint, track_elements)
+    height_map = generate_height_map(track_elements)
 
     # Convert valid_pieces to semantic names, merging in the predicted endpoint
     # for each piece so the agent sees name + destination together.
@@ -381,6 +346,7 @@ def format_coaster_state(
         "valid_pieces": valid_pieces,
         "is_circuit_complete": is_circuit_complete,
         "height_map": height_map,
+        "track_elements": track_elements,
     }
 
     return (state_dict, coaster_image)
@@ -589,6 +555,7 @@ def get_coaster_state(ride_id: int) -> Any:
             "nextEndpoint": next_endpoint,
             "isCircuitComplete": is_circuit_complete,
             "validPieceEndpoints": valid_piece_endpoints,
+            "trackElements": history_resp.get("trackElements"),
         }
 
         return list(format_coaster_state(ride_id, payload, valid_pieces))
@@ -651,10 +618,10 @@ def get_plugin_info() -> dict[str, Any]:
     """
     try:
         info = api_client.get_plugin_info()
-        return {"version": info.get("version"), "expected_version": "0.2.0",
-                "matches": info.get("version") == "0.2.0"}
+        return {"version": info.get("version"), "expected_version": "0.3.0",
+                "matches": info.get("version") == "0.3.0"}
     except APIError as e:
-        return {"success": False, "error": str(e), "expected_version": "0.2.0"}
+        return {"success": False, "error": str(e), "expected_version": "0.3.0"}
 
 
 @mcp.tool()

@@ -246,6 +246,8 @@ for (const el of els1) place(ride1, el);
 let r = request("getTrackHistory", { rideId: ride1 });
 assert(r.success === true, "getTrackHistory succeeds");
 assert(r.payload.history.length === 5, "linear track history has 5 pieces (got " + r.payload.history.length + ")");
+assert(r.payload.trackElements.some(e => e.x === 67 && e.y === 66 && e.z === 14),
+    "track history includes actual element tiles and base heights");
 assert(r.payload.history[0].trackType === 2 && r.payload.history[0].x === 67, "first piece is BeginStation at x=67");
 assert(r.payload.history[2].trackType === 1 && r.payload.history[2].x === 65, "third piece is EndStation at x=65");
 assert(r.payload.history[0].nextX === 66 && r.payload.history[0].nextDirection === 0, "next fields point at the following piece");

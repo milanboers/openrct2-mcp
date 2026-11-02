@@ -35,7 +35,7 @@ Do **not** invent ride type numbers — use only the table above. The state retu
 
 The server uses **Alignment Snapping**. You only select track types; coordinates are handled for you.
 
-The server returns images and a text-based height map of the current layout. The numbers represent the height (Z-value). Use them! Analyze them!
+The server returns an image and a text-based map of actual track-element tiles. Numbers are element base heights in game Z units; multiple heights on one tile are separated by `/`. The shaded tiles in the image show the same footprint; the connecting lines are approximate. Occupied tiles are not collision-clearance data, and an empty tile may still be obstructed.
 
 For a planned run of pieces, use `place_track_sequence` with a list of objects such as `{"track_type": "Up25", "has_chain_lift": true}`. The server checks each piece against the latest valid list and returns one final state and image. It stops at the first failure without rolling back earlier pieces. `placed_count` counts confirmed placements, but a failed piece may also have been placed; inspect the final state and `failed_index` before retrying. Use single-piece placement when the next move depends on the image or endpoint.
 

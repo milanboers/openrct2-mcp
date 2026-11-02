@@ -18,7 +18,7 @@ Three pieces talk to each other:
 - `place_track_segment`: Add a track segment. `valid_pieces` lists compatible types; the game can still reject a placement due to terrain or obstructions.
 - `place_track_sequence`: Place several segments in order, returning one final state and image. Stops at the first failure; earlier segments remain placed, and the failed segment may also have been placed. Inspect the final state before retrying. Each segment accepts `track_type`, `has_chain_lift`, `brake_speed`, and `seat_rotation`.
 - `undo_last_piece`: Remove the last placed segment.
-- `get_coaster_state`: Get the current authoritative state and visualization.
+- `get_coaster_state`: Get track history, actual track-element tiles and base heights, and a visualization. The footprint is not collision-clearance data; the image's connecting lines are approximate.
 - `place_entrance_exit`: Add entrance/exit to the station.
 - `start_ride_test`: Start test mode for ratings.
 - `get_ride_stats`: Get test status, pause state, train velocities, and ratings. Ratings use the game's decimal scale (e.g. 6.52) and are `null` until calculated; velocities are raw game values.

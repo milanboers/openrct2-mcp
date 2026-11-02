@@ -1,4 +1,4 @@
-var PLUGIN_VERSION = "0.2.0";
+var PLUGIN_VERSION = "0.3.0";
 
 function main() {
     "use strict";
@@ -1279,10 +1279,21 @@ function main() {
 
             case "getTrackHistory":
                 var state = getRideTrackState(request.params.rideId);
+                if (!state && getRideTrackElements(request.params.rideId).length > 0) {
+                    callback({ success: false, error: "Could not reconstruct ride track" });
+                    return;
+                }
                 callback({
                     success: true,
                     payload: {
-                        history: state ? state.history : []
+                        history: state ? state.history : [],
+                        trackElements: state ? state.elements.map(function (entry) {
+                            return {
+                                x: entry.tileX,
+                                y: entry.tileY,
+                                z: entry.element.baseZ / 8
+                            };
+                        }) : []
                     }
                 });
                 break;
