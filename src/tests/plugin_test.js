@@ -183,6 +183,28 @@ assert(connHandler != null, "plugin starts and listens");
 // Tests
 // ---------------------------------------------------------------------------
 
+// Ride statistics distinguish uncalculated ratings from real zero values.
+map.getRide = (id) => id === 10 ? {
+    status: "testing", excitement: -1, intensity: 0, nausea: 0, vehicles: [42, 43],
+} : null;
+map.getEntity = (id) => id === 42 ? { velocity: 1234 } : null;
+context.paused = true;
+let stats = request("getRideStats", { rideId: 10 });
+assert(JSON.stringify(stats.payload) === JSON.stringify({
+    ride_status: "testing", game_paused: true, ratings_available: false,
+    excitement: null, intensity: null, nausea: null,
+    vehicles: [{ id: 42, velocity: 1234 }, { id: 43, velocity: null }],
+}), "uncalculated ratings include test diagnostics and vehicle velocities");
+map.getRide = () => ({ status: "open", excitement: 652, intensity: 430, nausea: 0, vehicles: [] });
+context.paused = false;
+stats = request("getRideStats", { rideId: 10 });
+assert(JSON.stringify(stats.payload) === JSON.stringify({
+    ride_status: "open", game_paused: false, ratings_available: true,
+    excitement: 6.52, intensity: 4.3, nausea: 0, vehicles: [],
+}), "calculated ratings use game-scale values and preserve zero");
+map.getRide = () => null;
+assert(request("getRideStats", { rideId: 10 }).error === "Ride not found", "missing ride reports an error");
+
 // 1. Linear track is reconstructed in order.
 clearTiles();
 const ride1 = 1;

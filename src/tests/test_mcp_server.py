@@ -7,6 +7,8 @@ from typing import Any
 from mcp_server import (
     create_ride,
     place_track_segment,
+    place_track_sequence,
+    TrackSegment,
     undo_last_piece,
     get_coaster_state,
     place_entrance_exit,
@@ -50,7 +52,15 @@ class TestCreateRide:
             assert "Flat" in valid_names
             assert "FlatToUp25" in valid_names
             assert "height_map" in result[0]
-            mock_create.assert_called_once()
+            mock_create.assert_called_once_with(
+                ride_type=52,
+                ride_object=65535,
+                entrance_object=0,
+                colour1=0,
+                colour2=0,
+                inspection_interval=2,
+                name="Test Coaster",
+            )
             mock_place.assert_called_once()
 
 
@@ -95,6 +105,58 @@ class TestPlaceTrackSegment:
             assert result[0]["current_endpoint"]["x"] == 11
             assert "height_map" in result[0]
             mock_place.assert_called_once()
+
+
+class TestPlaceTrackSequence:
+    def test_sequence_success(self) -> None:
+        with patch.object(api_client, 'get_valid_next_pieces') as valid, \
+             patch.object(api_client, 'place_track_piece') as place, \
+             patch('mcp_server._get_ride_type', return_value=52), \
+             patch('mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']) as final:
+            valid.side_effect = [
+                {'validPieces': [6], 'position': {'x': 10, 'y': 20, 'z': 14, 'direction': 0}},
+                {'validPieces': [4], 'position': {'x': 9, 'y': 20, 'z': 15, 'direction': 0}},
+            ]
+            segments = [TrackSegment(track_type='FlatToUp25', has_chain_lift=True),
+                        TrackSegment(track_type='Up25', has_chain_lift=True)]
+
+            result = place_track_sequence(1, segments)
+
+            assert result == [{'success': True, 'placed_count': 2}, 'image']
+            assert place.call_count == 2
+            assert place.call_args_list[1].kwargs['tile_coordinate_x'] == 9
+            assert place.call_args_list[1].kwargs['has_chain_lift'] is True
+            final.assert_called_once_with(1)
+
+    @pytest.mark.parametrize('failure', ['invalid', 'placement', 'complete'])
+    def test_sequence_stops_on_failure(self, failure: str) -> None:
+        from api_client import APIError
+
+        with patch.object(api_client, 'get_valid_next_pieces') as valid, \
+             patch.object(api_client, 'place_track_piece') as place, \
+             patch('mcp_server._get_ride_type', return_value=52), \
+             patch('mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']) as final:
+            first = {'validPieces': [0], 'position': {'x': 10, 'y': 20, 'z': 14, 'direction': 0}}
+            second = {'validPieces': [0] if failure == 'placement' else [],
+                      'position': {'x': 9, 'y': 20, 'z': 14, 'direction': 0},
+                      'isCircuitComplete': failure == 'complete'}
+            valid.side_effect = [first, second]
+            if failure == 'placement':
+                place.side_effect = [None, APIError('Location occupied')]
+            segments = [TrackSegment(track_type='Flat')] * 3
+
+            result = place_track_sequence(1, segments)
+
+            assert result[0]['success'] is False
+            assert result[0]['placed_count'] == 1
+            assert result[0]['failed_index'] == 1
+            assert result[0]['error_message'] == {
+                'invalid': 'Invalid track type at this position: Flat',
+                'placement': 'Location occupied',
+                'complete': 'Circuit is already complete',
+            }[failure]
+            assert place.call_count == (2 if failure == 'placement' else 1)
+            final.assert_called_once_with(1)
 
 
 class TestUndoLastPiece:

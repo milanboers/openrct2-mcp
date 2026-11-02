@@ -16,11 +16,12 @@ Three pieces talk to each other:
 
 - `create_ride`: Create a new coaster and place the first station piece.
 - `place_track_segment`: Add a track segment (validates against game rules).
+- `place_track_sequence`: Place several segments in order, returning one final state and image. Stops at the first failure; earlier segments remain placed, and the failed segment may also have been placed. Inspect the final state before retrying. Each segment accepts `track_type`, `has_chain_lift`, `brake_speed`, and `seat_rotation`.
 - `undo_last_piece`: Remove the last placed segment.
 - `get_coaster_state`: Get the current authoritative state and visualization.
 - `place_entrance_exit`: Add entrance/exit to the station.
 - `start_ride_test`: Start test mode for ratings.
-- `get_ride_stats`: Get intensity, excitement, and nausea ratings.
+- `get_ride_stats`: Get test status, pause state, train velocities, and ratings. Ratings use the game's decimal scale (e.g. 6.52) and are `null` until calculated; velocities are raw game values.
 - `list_all_rides`: List existing rides.
 - `delete_all_rides`: Clear all rides.
 

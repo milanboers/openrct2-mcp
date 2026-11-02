@@ -6,6 +6,7 @@ from typing import Any, Optional, Tuple
 from fastmcp import FastMCP
 from fastmcp.utilities.types import Image as MCPImage
 from PIL import Image, ImageDraw
+from pydantic import BaseModel, Field
 
 try:
     from .api_client import OpenRCT2API, APIError
@@ -388,7 +389,8 @@ def create_ride(
         # 1. Create the ride via API
         result = api_client.create_ride(
             ride_type=ride_type,
-            ride_object=0,
+            # Let OpenRCT2 choose a compatible loaded vehicle object.
+            ride_object=65535,
             entrance_object=0,
             colour1=0,
             colour2=0,
@@ -500,6 +502,70 @@ def place_track_segment(
             return {"success": False, "error_message": error_msg}
 
 
+class TrackSegment(BaseModel):
+    """A single track piece and its placement options."""
+
+    track_type: str
+    has_chain_lift: bool = False
+    brake_speed: int = 0
+    seat_rotation: int = 0
+
+
+@mcp.tool()
+def place_track_sequence(
+    ride_id: int, segments: list[TrackSegment] = Field(min_length=1)
+) -> Any:
+    """Place track pieces in order, stopping at the first failure.
+
+    Each piece is validated against the latest game state. Earlier pieces are
+    not rolled back on failure. Returns the final state and image, with the
+    number of confirmed placements and, on failure, the zero-based failed index
+    and error. Any placement error can leave the failed piece's outcome unknown;
+    inspect the final state before retrying.
+    """
+    placed = 0
+    failed_index = None
+    error = None
+    try:
+        ride_type = _get_ride_type(ride_id)
+        for index, segment in enumerate(segments):
+            failed_index = index
+            state = api_client.get_valid_next_pieces(ride_id)
+            if state.get("isCircuitComplete"):
+                raise APIError("Circuit is already complete")
+            track_id = TRACK_NAME_TO_ID.get(segment.track_type)
+            if track_id is None or track_id not in state.get("validPieces", []):
+                raise APIError(f"Invalid track type at this position: {segment.track_type}")
+            position = state.get("position")
+            if not position:
+                raise APIError("Game did not return a track placement position")
+            api_client.place_track_piece(
+                ride_id=ride_id,
+                tile_coordinate_x=position["x"],
+                tile_coordinate_y=position["y"],
+                tile_coordinate_z=position["z"],
+                direction=position["direction"],
+                track_type=track_id,
+                ride_type=ride_type,
+                brake_speed=segment.brake_speed,
+                seat_rotation=segment.seat_rotation,
+                has_chain_lift=segment.has_chain_lift,
+            )
+            placed += 1
+        failed_index = None
+    except APIError as e:
+        error = str(e)
+
+    result = get_coaster_state(ride_id)
+    summary = result[0] if isinstance(result, list) else result
+    summary["placed_count"] = placed
+    if error is not None:
+        summary["success"] = False
+        summary["failed_index"] = failed_index
+        summary["error_message"] = error
+    return result
+
+
 @mcp.tool()
 def undo_last_piece(ride_id: int) -> Any:
     """
@@ -592,7 +658,10 @@ def start_ride_test(ride_id: int) -> dict[str, Any]:
 @mcp.tool()
 def get_ride_stats(ride_id: int) -> dict[str, Any]:
     """
-    Get ride statistics (ratings).
+    Get ride status, pause state, train velocities, and ratings.
+
+    Ratings use the game's decimal scale (e.g. 6.52), and are null until
+    calculated. Vehicle velocities are raw OpenRCT2 values, not mph or km/h.
     """
     try:
         return api_client.get_ride_stats(ride_id)

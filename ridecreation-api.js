@@ -580,10 +580,23 @@ function main() {
                     });
                     return;
                 }
+                // OpenRCT2 uses -1 for an uncalculated excitement rating.
+                var ratingsAvailable = ride.excitement >= 0;
+                var vehicles = ride.vehicles.map(function (id) {
+                    var vehicle = map.getEntity(id);
+                    return {
+                        id: id,
+                        velocity: vehicle ? vehicle.velocity : null
+                    };
+                });
                 var stats = {
-                    excitement: ride.excitement / 100,
-                    intensity: ride.intensity / 100,
-                    nausea: ride.nausea / 100
+                    ride_status: ride.status,
+                    game_paused: context.paused,
+                    ratings_available: ratingsAvailable,
+                    excitement: ratingsAvailable ? ride.excitement / 100 : null,
+                    intensity: ratingsAvailable ? ride.intensity / 100 : null,
+                    nausea: ratingsAvailable ? ride.nausea / 100 : null,
+                    vehicles: vehicles
                 };
                 callback({
                     success: true,

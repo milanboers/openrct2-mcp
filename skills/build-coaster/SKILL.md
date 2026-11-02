@@ -37,6 +37,8 @@ The server uses **Alignment Snapping**. You only select track types; coordinates
 
 The server returns images and a text-based height map of the current layout. The numbers represent the height (Z-value). Use them! Analyze them!
 
+For a planned run of pieces, use `place_track_sequence` with a list of objects such as `{"track_type": "Up25", "has_chain_lift": true}`. The server checks each piece against the latest valid list and returns one final state and image. It stops at the first failure without rolling back earlier pieces. `placed_count` counts confirmed placements, but a failed piece may also have been placed; inspect the final state and `failed_index` before retrying. Use single-piece placement when the next move depends on the image or endpoint.
+
 ### 1. The Station Sequence
 `create_ride` places the first station piece for you. The game decides whether each piece counts as begin, middle, or end based on the station's shape — so just build the station as a straight line:
 1. **Middle pieces**: Place 2-4 **MiddleStation** pieces, heading straight out of the station.
@@ -116,10 +118,10 @@ After a failure the server returns the full state again — read `valid_pieces` 
 
 ## Ratings (get_ride_stats)
 
-After `start_ride_test`, `get_ride_stats` returns `excitement`, `intensity`, and `nausea` on a 0-100 scale. A good coaster roughly scores:
+After `start_ride_test`, `get_ride_stats` returns ratings on the game's decimal scale. Ratings are `null` until calculated; check `ratings_available`, `ride_status`, and `game_paused`. Vehicle velocities are raw game values, not mph or km/h. A good coaster roughly scores:
 
-- **excitement** in the 60s-80s
-- **intensity** around 40-60 (higher is more forceful, but too high feels rough)
-- **nausea** as low as possible (under ~20)
+- **excitement** around 6–8
+- **intensity** around 4–6 (higher is more forceful, but too high feels rough)
+- **nausea** as low as possible (under ~2)
 
 If excitement is low, add hills, airtime, or a bigger drop. If intensity or nausea are too high, bank your turns more and keep the layout smoother.
