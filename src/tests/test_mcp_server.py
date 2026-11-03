@@ -371,6 +371,9 @@ class TestCoasterTools:
                 {'type': 0, 'description': 'Straight', 'supported_name': 'Flat'},
                 {'type': 999, 'description': 'Other', 'supported_name': None},
             ]
+            assert get_track_catalog(supported_only=True) == [
+                {'type': 0, 'description': 'Straight', 'supported_name': 'Flat'},
+            ]
 
     def test_set_ride_vehicles(self) -> None:
         with patch.object(api_client, 'set_ride_vehicles', return_value={
@@ -389,8 +392,8 @@ class TestCoasterTools:
             delete.assert_called_once_with(1)
 
     def test_get_plugin_info(self) -> None:
-        with patch.object(api_client, 'get_plugin_info', return_value={'version': '0.13.0', 'protocol_version': 1}):
-            assert get_plugin_info() == {'version': '0.13.0', 'expected_version': '0.13.0', 'matches': True,
+        with patch.object(api_client, 'get_plugin_info', return_value={'version': '0.14.0', 'protocol_version': 1}):
+            assert get_plugin_info() == {'version': '0.14.0', 'expected_version': '0.14.0', 'matches': True,
                                          'protocol_version': 1, 'expected_protocol_version': 1, 'protocol_compatible': True}
 
     def test_list_rides_failure_is_not_empty_list(self) -> None:
@@ -595,3 +598,18 @@ def test_spatial_views_reject_unreliable_traversals(layout):
     assert result['success'] is False
     assert 'connected layout' in result['error']
     map_area.assert_not_called()
+
+
+def test_entrance_helper_retains_confirmed_progress_before_unknown_acknowledgement():
+    from openrct2_mcp.api_client import APIError
+
+    details = {'confirmed_steps': 1, 'entrance_exit': {'entrance': {'x': 10}, 'exit': None}}
+    with patch.object(api_client, 'place_entrance_exit', side_effect=APIError('No result', outcome='unknown', details=details)), \
+         patch('openrct2_mcp.mcp_server.get_coaster_state', return_value=[{'success': True, 'ride_id': 0}, 'image']):
+        result = place_entrance_exit(0)
+
+    assert result[0]['success'] is False
+    assert result[0]['operation_outcome'] == 'unknown'
+    assert result[0]['execution_status'] == 'partial'
+    assert result[0]['ride_id'] == 0
+    assert result[0]['error_details'] == details

@@ -710,15 +710,104 @@ assert(readMutations === 0, "park, research, station and state reads execute no 
 // Guest-operation regressions: building directions and conservative path edits.
 context.executeAction = executeBeforeReads;
 clearTiles();
-const directionRide = { id: 7, type: 52, stations: [] };
+const directionRide = { id: 7, type: 52, status: "closed", guestCount: 0, stations: [
+    { start: { x: 320, y: 320, z: 112 }, length: 2, entrance: null, exit: null },
+] };
 map.rides.forEach = fn => fn(directionRide);
 map.getRide = () => directionRide;
-place(7, makeTrack(10, 10, 1, 0, 112));
 const buildingArgs = [];
-actionHandlers.rideentranceexitplace = (args, cb) => { buildingArgs.push(args); cb({}); };
-assert(request("placeEntranceExit", { rideId: 7 }).success && buildingArgs.length === 2 &&
-    buildingArgs[0].direction === 1 && buildingArgs[1].direction === 3,
-    "east-west station buildings face toward the station so external paths can connect");
+actionHandlers.rideentranceexitplace = (args, cb) => {
+    buildingArgs.push(args);
+    directionRide.stations[0][args.isExit ? "exit" : "entrance"] = {
+        x: args.x, y: args.y, z: 112, direction: args.direction,
+    };
+    cb({ cost: 0 });
+};
+function stationWorld(direction) {
+    clearTiles();
+    const el = makeTrack(10, 10, 1, direction, 112);
+    el.station = 0;
+    place(7, el);
+    for (const [x, y] of [[9, 10], [11, 10], [10, 9], [10, 11], [11, 9]]) {
+        tiles.set(x + "," + y, [{ type: "surface", baseZ: 112 }]);
+    }
+    directionRide.stations[0].entrance = directionRide.stations[0].exit = null;
+    buildingArgs.length = 0;
+}
+for (let direction = 0; direction < 4; direction++) {
+    stationWorld(direction);
+    const auto = request("placeEntranceExit", { rideId: 7 });
+    const expectedDirs = direction % 2 === 0 ? [1, 3] : [2, 0];
+    assert(auto.success && buildingArgs.length === 2 &&
+        buildingArgs.every((args, index) => args.direction === expectedDirs[index]),
+        "automatic station buildings face toward station, heading " + direction);
+    assert(request("placeEntranceExit", { rideId: 7 }).success && buildingArgs.length === 2,
+        "automatic helper preserves existing buildings rather than relocating them");
+}
+stationWorld(0);
+const anotherStation = makeTrack(11, 10, 1, 0, 112);
+anotherStation.station = 0;
+place(7, anotherStation);
+const entranceTarget = { rideId: 7, building: "entrance", x: 10, y: 9, direction: 1 };
+assert(request("placeStationBuilding", entranceTarget).success &&
+    request("placeStationBuilding", { ...entranceTarget, building: "exit", x: 11 }).success &&
+    buildingArgs.length === 2 && buildingArgs.every(args => args.y === 288),
+    "explicit buildings may occupy adjacent tiles on the same side of a station");
+assert(!request("placeStationBuilding", { ...entranceTarget, x: 11 }).success && buildingArgs.length === 2,
+    "existing buildings cannot be relocated without an exact observation guard");
+const existingEntrance = request("getRideStationAccess", { rideId: 7, radius: 0 }).payload.stations[0].entrance.position;
+assert(!request("placeStationBuilding", { ...entranceTarget, y: 11,
+    expected_position: { ...existingEntrance, z: 16 } }).success && buildingArgs.length === 2,
+    "stale relocation guard rejects without executing an action");
+assert(request("placeStationBuilding", { ...entranceTarget, y: 11, direction: 3,
+    expected_position: existingEntrance }).success && buildingArgs.length === 3 &&
+    directionRide.stations[0].entrance.y === 352,
+    "guarded relocation uses the normal game action without a separate demolition");
+stationWorld(0);
+for (const invalid of [
+    { ...entranceTarget, x: 9, direction: 2 }, // Faces along station track, not its side.
+    { ...entranceTarget, direction: 3 }, // Faces away.
+    { ...entranceTarget, y: 8 }, // Not adjacent.
+    { ...entranceTarget, expected_position: existingEntrance }, // Building absent.
+]) assert(!request("placeStationBuilding", invalid).success && buildingArgs.length === 0,
+    "invalid station position or obsolete guard cannot mutate");
+for (const value of [1, null, undefined]) {
+    directionRide.guestCount = value;
+    assert(!request("placeStationBuilding", entranceTarget).success && buildingArgs.length === 0,
+        "station edits reject nonzero or unknown guests");
+}
+directionRide.guestCount = 0;
+directionRide.status = "open";
+assert(!request("placeStationBuilding", entranceTarget).success && buildingArgs.length === 0,
+    "station edits require a closed ride");
+directionRide.status = "closed";
+tiles.get("10,9").push({ type: "wall", baseZ: 112 });
+assert(!request("placeStationBuilding", entranceTarget).success && buildingArgs.length === 0,
+    "station placement cannot clear existing scenery");
+stationWorld(0);
+const normalBuildingAction = actionHandlers.rideentranceexitplace;
+for (const prefix of [0, 1]) {
+    stationWorld(0);
+    let attempts = 0;
+    actionHandlers.rideentranceexitplace = (args, cb) => {
+        attempts++;
+        if (attempts <= prefix) normalBuildingAction(args, cb);
+        else cb(null);
+    };
+    const unknown = request("placeEntranceExit", { rideId: 7 });
+    assert(!unknown.success && unknown.outcome === "unknown" && attempts === prefix + 1 &&
+        unknown.error_details.confirmed_steps === prefix,
+        "automatic helper stops on unknown acknowledgement and retains confirmed prefix " + prefix);
+}
+actionHandlers.rideentranceexitplace = normalBuildingAction;
+for (const prefix of [0, 1]) {
+    stationWorld(0);
+    directionRide.stations[0][prefix === 0 ? "entrance" : "exit"] = undefined;
+    const unknownPosition = request("placeEntranceExit", { rideId: 7 });
+    assert(!unknownPosition.success && unknownPosition.outcome === "rejected" &&
+        unknownPosition.error_details.confirmed_steps === prefix && buildingArgs.length === prefix,
+        "unknown position prevents a new action without claiming unknown acknowledgement, prefix " + prefix);
+}
 clearTiles();
 context.getAllObjects = type => type === "footpath_surface" ? [{ index: 2, identifier: "surface", name: "Surface", flags: 0 }] :
     [{ index: 3, identifier: "railings", name: "Railings" }];

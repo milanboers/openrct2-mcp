@@ -1,17 +1,18 @@
 """Narrow flat-path and guest-operation tools, using ordinary game actions."""
 
 import re
-from typing import Annotated, Any, Callable
+from typing import Annotated, Any, Callable, Literal, Optional
 from uuid import uuid4
 
 from fastmcp import FastMCP
 from pydantic import Field
 
 from .api_client import APIError, OpenRCT2API
+from .models import Endpoint, PathTile
 from .results import mutation_failure, mutation_status
 
 
-def path_result(result: dict[str, Any]) -> dict[str, Any]:
+def observed_mutation_result(result: dict[str, Any]) -> dict[str, Any]:
     available = result.get('observed_after') is not None
     return {'success': available, **result, **mutation_status('confirmed', state_available=available)}
 
@@ -78,11 +79,74 @@ def register_park_tools(
         guards or guest-access proof. An acknowledged placement can have unavailable readback.
         """
         try:
-            return path_result(get_api().place_path_tile(
+            return observed_mutation_result(get_api().place_path_tile(
                 x=x, y=y, z=z, surface_object=surface_object, railings_object=railings_object, is_queue=is_queue,
             ))
         except APIError as error:
             return mutation_failure(error)
+
+    @mcp.tool(annotations={'openWorldHint': False})
+    def place_path_sequence(
+        tiles: Annotated[list[PathTile], Field(min_length=1, max_length=256)],
+        surface_object: int, railings_object: int, is_queue: bool = False,
+    ) -> dict[str, Any]:
+        """Place 1-256 caller-chosen flat ground-level path tiles in order.
+
+        Uses the same restrictions as place_path_tile, with shared path objects
+        and queue flag. No routing, replacement or rollback. Stops on the first
+        rejected/unknown action or unavailable readback. placed_count and placements
+        retain the confirmed prefix; failed_index is zero-based. last_placement
+        contains that action's observations, not a final survey of the route.
+        Inspect the failed tile before retrying an unknown outcome.
+        """
+        placements = []
+        last = None
+        for index, tile in enumerate(tiles):
+            try:
+                last = observed_mutation_result(get_api().place_path_tile(
+                    **tile.model_dump(), surface_object=surface_object,
+                    railings_object=railings_object, is_queue=is_queue,
+                ))
+            except APIError as error:
+                return {
+                    **mutation_failure(error, confirmed_steps=len(placements)),
+                    'placed_count': len(placements), 'placements': placements, 'failed_index': index,
+                    'last_placement': last, 'state_status': 'unavailable',
+                }
+            placements.append({'index': index, **tile.model_dump(), 'cost_raw': last.get('cost_raw')})
+            if not last['success']:
+                return {
+                    **last, 'placed_count': len(placements), 'placements': placements, 'failed_index': index,
+                    'execution_status': 'partial' if len(placements) < len(tiles) else 'completed',
+                    'last_placement': last,
+                }
+        return {
+            'success': True, **mutation_status('confirmed', state_available=True),
+            'placed_count': len(placements), 'placements': placements, 'last_placement': last,
+        }
+
+    @mcp.tool(annotations={'openWorldHint': False})
+    def place_station_building(
+        ride_id: int, building: Literal['entrance', 'exit'], x: int, y: int,
+        direction: Literal[0, 1, 2, 3], expected_position: Optional[Endpoint] = None,
+    ) -> dict[str, Any]:
+        """Place a chosen entrance or exit facing adjacent first-station track.
+
+        Coordinates are tiles. Directions: 0 west, 1 +y, 2 east, 3 -y, toward
+        the station. Height comes from station 0; exactly one station is supported.
+        Requires a closed ride with known zero guests. Moving an existing building
+        requires its exact current expected_position (x, y, z, direction) from
+        get_ride_station_access. The guard is not a reservation. No paths or scenery
+        are replaced. The game action can reset vehicles and change queue edges.
+        Both buildings may be placed on the same side. Does not prove guest access.
+        """
+        try:
+            return observed_mutation_result(get_api().place_station_building(
+                ride_id=ride_id, building=building, x=x, y=y, direction=direction,
+                expected_position=expected_position.model_dump() if expected_position else None,
+            ))
+        except APIError as error:
+            return mutation_failure(error, ride_id=ride_id)
 
     @mcp.tool(annotations={'destructiveHint': True, 'openWorldHint': False})
     def remove_path_tile(x: int, y: int, z: int, expected_path: dict[str, Any]) -> dict[str, Any]:
@@ -92,7 +156,7 @@ def register_park_tools(
         The observation is not a reservation. Never retry an unknown removal blindly.
         """
         try:
-            return path_result(get_api().remove_path_tile(x=x, y=y, z=z, expected_path=expected_path))
+            return observed_mutation_result(get_api().remove_path_tile(x=x, y=y, z=z, expected_path=expected_path))
         except APIError as error:
             return mutation_failure(error)
 

@@ -594,8 +594,11 @@ def get_coaster_state(ride_id: int, include_image: bool = True, compact: bool = 
 
 @mcp.tool()
 def place_entrance_exit(ride_id: int, include_image: bool = True, compact: bool = False) -> Any:
-    """
-    Place entrance and exit for a ride's station.
+    """Automatically place missing entrance/exit buildings on opposite station sides.
+
+    Requires a closed, guest-free ride with one station. Preserves existing
+    buildings and stops on unknown acknowledgement. For chosen positions or
+    guarded relocation, use place_station_building instead. Does not build paths.
     """
     try:
         result = api_client.place_entrance_exit(ride_id)
@@ -609,8 +612,9 @@ def place_entrance_exit(ride_id: int, include_image: bool = True, compact: bool 
         return state
     except APIError as e:
         logger.error(f"API error placing entrance/exit: {e}")
-        return _mutation_state(ride_id, e.outcome, str(e), include_image=include_image, compact=compact,
-                               error_details=e.details)
+        return _mutation_state(ride_id, e.outcome, str(e),
+                               confirmed_steps=e.details.get("confirmed_steps", 0),
+                               include_image=include_image, compact=compact, error_details=e.details)
 
 
 @mcp.tool()
@@ -716,9 +720,10 @@ def get_ride_test_report(
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
-def get_track_catalog() -> Any:
+def get_track_catalog(supported_only: bool = False) -> Any:
     """List the game's track descriptors and which types this server can place.
 
+    Set supported_only to omit descriptors outside the server's supported subset.
     This catalog is not filtered for a ride or endpoint. A listed type is not
     necessarily available for a ride, compatible with its endpoint, or placeable.
     """
@@ -727,7 +732,7 @@ def get_track_catalog() -> Any:
         for piece in catalog:
             name = TRACK_TYPES.get(piece.get("type"))
             piece["supported_name"] = name
-        return catalog
+        return [piece for piece in catalog if not supported_only or piece["supported_name"] is not None]
     except APIError as e:
         return {"success": False, "error": str(e)}
 

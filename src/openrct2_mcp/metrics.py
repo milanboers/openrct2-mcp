@@ -16,7 +16,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from .results import Outcome
 
 logger = logging.getLogger(__name__)
-PLACEMENT_TOOLS = {'create_ride', 'place_track_segment', 'place_track_sequence', 'place_path_tile'}
+PLACEMENT_TOOLS = {
+    'create_ride', 'place_track_segment', 'place_track_sequence',
+    'place_path_tile', 'place_path_sequence', 'place_station_building',
+}
 REMOVAL_TOOLS = {'undo_last_piece', 'remove_terminal_piece', 'remove_path_tile'}
 
 
@@ -118,10 +121,11 @@ class ResultMiddleware(Middleware):
         summary = (result_summary(result) if result is not None else None) or {}
         outcome = summary.get('operation_outcome')
         placements = tool in PLACEMENT_TOOLS
-        segments = arguments.get('segments')
+        sequence = tool in {'place_track_sequence', 'place_path_sequence'}
+        segments = arguments.get('tiles' if tool == 'place_path_sequence' else 'segments')
         candidates = arguments.get('candidates')
-        requested = (len(segments) if isinstance(segments, list) else 0) if tool == 'place_track_sequence' else int(placements)
-        confirmed = summary.get('placed_count', 0) if tool == 'place_track_sequence' else int(
+        requested = (len(segments) if isinstance(segments, list) else 0) if sequence else int(placements)
+        confirmed = summary.get('placed_count', 0) if sequence else int(
             placements and outcome == 'confirmed'
         )
         query_results = summary.get('results', []) if tool == 'check_track_candidates' else [summary]

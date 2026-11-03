@@ -22,20 +22,22 @@ Three pieces talk to each other:
 - `place_track_sequence`: Place several segments in order, returning one final state and image. Stops at the first failure; earlier segments remain placed, and the failed segment may also have been placed. Inspect the final state before retrying. Each segment accepts `track_type`, `has_chain_lift`, `brake_speed`, and `seat_rotation`.
 - `undo_last_piece`: Remove the terminal segment of a connected layout (not chronological undo). On a closed circuit with a begin station, removes the piece immediately before that station. Disconnected or ambiguous layouts are rejected.
 - `get_coaster_state`: Get track history, actual track-element tiles and base heights, and a visualization. `candidate_status` explains when candidate generation is unavailable or the circuit is complete. `layout_status` reports disconnected or ambiguous track. Set `include_image: false, compact: true` for endpoint/candidate information without full history, occupancy or an image. The footprint is not collision-clearance data; the image's connecting lines are approximate.
-- `place_entrance_exit`: Add entrance/exit to the station.
+- `place_station_building`: Choose an entrance or exit position, with a guard for moving an existing building.
+- `place_entrance_exit`: Automatically add missing entrance/exit buildings to the station.
 - `start_ride_test`: Start test mode for ratings.
 - `close_ride`: Close a ride before editing track or changing vehicles.
 - `reset_ride`: Explicitly clear vehicles on an already closed, guest-free ride before substantial editing. No track is removed.
 - `get_ride_station_access`: Inspect station buildings and bounded nearby path edges, heights and queue assignments (not proof of connectivity).
 - `get_park_status`: Read park finances, guests, date, research and scenario objective/status without changing anything.
 - `get_path_objects` / `get_path_area`: Discover loaded modern path objects and inspect bounded path edges, heights, queues and ghosts.
-- `place_path_tile` / `remove_path_tile`: Build flat ground-level paths or remove one using an exact observed-path guard. No replacement, slopes, bridges or scenery clearing.
+- `place_path_tile` / `place_path_sequence`: Build one flat ground-level path tile or a caller-supplied sequence. No routing, replacement, slopes, bridges or scenery clearing.
+- `remove_path_tile`: Remove a flat path using an exact observed-path guard.
 - `open_ride`: Open a ride through a normal game action.
 - `get_ride_guest_report`: Observe customer-counter progress, with explicit limits on completion and access interpretation.
 - `save_park`: Request a fresh named checkpoint. File persistence remains unknown until verified on disk.
 - `get_ride_stats`: Get test status, pause state, instantiated trains and car counts, ratings, speed, length, duration, G-forces, and drops. Closed rides may have no instantiated trains. Ratings use the game's decimal scale (e.g. 6.52) and are `null` until calculated; vehicle velocities are raw game values.
 - `list_all_rides`: List existing rides.
-- `get_track_catalog`: Inspect game track descriptors and which types the server supports. The catalog isn't filtered for the current ride.
+- `get_track_catalog`: Inspect game track descriptors and which types the server supports. Set `supported_only=true` to omit unsupported types. The catalog isn't filtered for the current ride or endpoint.
 - `set_ride_vehicles`: Set the proposed train count or cars per train on a closed ride (the game may apply limits).
 - `get_plugin_info`: Diagnose the connection, plugin/protocol compatibility, scripting API version, park name, map size and pause state.
 - `delete_ride`: Demolish one ride by ID.
@@ -205,7 +207,7 @@ The yellow arrow marks the current endpoint heading. The green arrow marks the t
 
 `get_coaster_view(ride_id, view="elevation")` plots heights at track-piece boundaries. The first sample is the track origin, and subsequent samples use the game's next-connection heights (rather than the lowered origins of downward pieces). Equal X spacing does **not** mean equal track length, and lines omit geometry within a piece. The response includes the height range and sample count.
 
-Both views require a complete traversal of a connected layout. Neither establishes clearance, ride support, speed or G-forces. The endpoint view includes objects at all heights; consult their base/clearance heights in `map_area`. Ride and map reads are separate, so the park can change between them. These views require the matching plugin; the current plugin release is `0.13.0`.
+Both views require a complete traversal of a connected layout. Neither establishes clearance, ride support, speed or G-forces. The endpoint view includes objects at all heights; consult their base/clearance heights in `map_area`. Ride and map reads are separate, so the park can change between them. These views require the matching plugin; the current plugin release is `0.14.0`.
 
 ## Tips
 
@@ -274,9 +276,25 @@ Fields ending in `_raw` retain scripting API units; objective fields should only
 be interpreted for their corresponding objective type. It does not advance time,
 change finances/research, forecast success or independently certify completion.
 
+## Station building placement
+
+`place_station_building(ride_id, building, x, y, direction, expected_position=None)` places one `entrance` or `exit` at a caller-chosen tile. Direction faces **toward** the station: 0 west, 1 +y, 2 east, 3 -y. Height comes from the first station. The building must face adjacent station-0 track, perpendicular to the track's heading. Exactly one station is supported.
+
+Both buildings can occupy different tiles on the same side of the station. This is useful when opposite-side placement would leave an entrance or exit inside a ground-level circuit. Existing paths, buildings and scenery at the target are not replaced or cleared. Track clearance remains the game's decision.
+
+Edits require a closed ride with a known zero guest count. The normal game action can reset vehicles and change queue connections. Moving an existing building additionally requires its exact current `expected_position` (`x`, `y`, `z`, `direction`) from `get_ride_station_access`. A missing or stale guard rejects before mutation; the guard is not a reservation. No separate remove/rebuild or rollback is performed. Inspect after unknown outcomes before deciding whether to retry.
+
+The result includes action cost in raw game units and bounded station/path observations before and after the action. Confirmed placement can have unavailable readback; inspect `operation_outcome` separately from `state_status`. Placement does not establish guest access.
+
+`place_entrance_exit` remains a convenience helper. It preserves existing buildings, tries missing buildings on opposite sides of first-station track, and stops on unknown action acknowledgement rather than trying another position. A failure retains confirmed progress in `error_details`.
+
 ## Flat paths, guests and checkpoints
 
 The first path-construction scope is one flat ground level using modern path surface and railings objects. Inspect park-local indices with `get_path_objects`, then use `place_path_tile(x, y, z, surface_object, railings_object, is_queue=False)`. Coordinates are tiles, with Z in units of 8; path Z must be even. Ground must be flat and dry. Existing paths and scenery are not replaced or cleared. Sufficiently elevated track can remain overhead, subject to the game's clearance checks.
+
+`place_path_sequence(tiles, surface_object, railings_object, is_queue=False)` takes 1–256 explicit `{x, y, z}` tiles. The entire input shape and height ranges are validated before the first action; terrain, object availability and game clearance are checked per tile when placing. All tiles share the path objects and queue flag. Tiles need not be adjacent; the tool does not route or certify connectivity. It stops on the first rejected/unknown action or unavailable readback, without retries or rollback.
+
+`placed_count` and `placements` retain the confirmed prefix and per-tile costs. `failed_index` is zero-based. A confirmed tile with failed inspection still counts as placed; remaining tiles are not attempted. `last_placement` contains observations taken immediately after that confirmed action, not a final route-wide survey. Later actions can change earlier tiles' edges and queue assignments; inspect the route separately when needed.
 
 The game connects edges and assigns queue ownership. Placement returns neighboring path observations from before and after the action, including overlapping heights and ghosts. `remove_path_tile` requires the exact current path observation from `get_path_area`, and accepts only a single flat, non-ghost path without an addition. These checks are not reservations or transactions. Side effects can extend beyond the observed one-tile neighborhood, particularly queue reassignment. No automatic rollback is attempted.
 
@@ -322,7 +340,7 @@ A healthy server writes a completion marker on normal exit; interrupted captures
 
 ## Compatibility and security
 
-- Live-verified against OpenRCT2 **0.5.7**, scripting API **124**, with plugin **0.13.0**. Other versions are not yet verified.
+- Live-verified against OpenRCT2 **0.5.7**, scripting API **124**, with plugin **0.14.0**. Other versions are not yet verified.
 - `get_plugin_info` reports the loaded version and protocol capabilities. `matches` checks the plugin release; `protocol_compatible` checks the wire protocol. Package release numbers and wire protocol versions are separate. The current protocol is `1`. The plugin requires scripting API 124 or newer; only the listed game version is live-verified.
 - The plugin listens only on `127.0.0.1:8080`. It has **no authentication** and is intended for a trusted local machine. Do not expose or forward this port to other machines. Local processes can still invoke destructive endpoints.
 - The listener limits buffered request data to 1 MiB. The Python client limits response lines to 16 MiB and discards broken/timed-out connections without automatically retrying commands.

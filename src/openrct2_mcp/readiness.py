@@ -7,7 +7,7 @@ REQUIRED_TOOLS = {
     'get_plugin_info', 'get_park_status', 'list_all_rides', 'create_ride', 'get_coaster_state',
     'place_track_sequence', 'check_track_candidates', 'preview_track_removal', 'remove_terminal_piece',
     'close_ride', 'reset_ride', 'start_ride_test', 'get_ride_test_report', 'get_coaster_view',
-    'get_loaded_ride_objects', 'get_path_objects', 'get_path_area', 'place_path_tile',
+    'place_station_building', 'place_path_sequence', 'get_loaded_ride_objects', 'get_path_objects', 'get_path_area', 'place_path_tile',
     'remove_path_tile', 'open_ride', 'get_ride_guest_report', 'save_park',
 }
 

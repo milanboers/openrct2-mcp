@@ -358,6 +358,9 @@ class OpenRCT2API:
     def remove_path_tile(self, **params: Any) -> dict[str, Any]:
         return self._send_request('removePathTile', params)
 
+    def place_station_building(self, ride_id: int, **params: Any) -> dict[str, Any]:
+        return self._send_request('placeStationBuilding', {'rideId': ride_id, **params})
+
     def open_ride(self, ride_id: int) -> Any:
         return self._send_request('openRide', {'rideId': ride_id})
 

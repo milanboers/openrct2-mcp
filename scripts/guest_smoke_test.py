@@ -141,13 +141,13 @@ async def run(port, output, timeout):
         railing = railings['rct2.footpath_railings.bamboo_black']
         with (output / 'path-actions.jsonl').open('x') as actions:
             for is_queue, points, surface in [(False, public, normal), (True, queue, queued)]:
-                for x, y in points:
-                    actions.write(json.dumps({'phase': 'requested', 'x': x, 'y': y, 'is_queue': is_queue}) + '\n')
-                    actions.flush()
-                    result = await call_object(client, 'place_path_tile', x=x, y=y, z=14,
-                                               surface_object=surface, railings_object=railing, is_queue=is_queue)
-                    actions.write(json.dumps({'phase': 'completed', 'x': x, 'y': y, 'is_queue': is_queue, 'result': result}) + '\n')
-                    actions.flush()
+                tiles = [{'x': x, 'y': y, 'z': 14} for x, y in points]
+                actions.write(json.dumps({'phase': 'requested', 'tiles': tiles, 'is_queue': is_queue}) + '\n')
+                actions.flush()
+                result = await call_object(client, 'place_path_sequence', tiles=tiles,
+                                           surface_object=surface, railings_object=railing, is_queue=is_queue)
+                actions.write(json.dumps({'phase': 'completed', 'is_queue': is_queue, 'result': result}) + '\n')
+                actions.flush()
         paths = []
         for x in (120, 136, 146):
             paths.extend((await call_object(client, 'get_path_area', x=x, y=62, radius=8))['paths'])

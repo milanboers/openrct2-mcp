@@ -153,3 +153,133 @@ def test_unknown_checkpoint_retains_filename_for_inspection_without_retry(tools)
     assert result['operation_outcome'] == 'unknown'
     assert result['filename'] == api.save_park.call_args.args[0] + '.park'
     assert api.save_park.call_count == 1
+
+
+def test_path_sequence_retains_tiles_costs_and_last_observation(tools):
+    mcp, api, _ = tools
+    tiles = [{'x': x, 'y': 20, 'z': 14} for x in range(10, 13)]
+    api.place_path_tile.side_effect = [
+        {'cost_raw': 100, 'observed_after': {'x': tile['x'], 'paths': []}} for tile in tiles
+    ]
+
+    async def scenario():
+        async with Client(mcp) as client:
+            return await call_object(client, 'place_path_sequence', tiles=tiles,
+                                     surface_object=2, railings_object=3, is_queue=True)
+
+    result = asyncio.run(scenario())
+
+    assert result['placed_count'] == 3
+    assert result['execution_status'] == 'completed'
+    assert result['state_status'] == 'available'
+    assert result['placements'] == [{'index': index, **tile, 'cost_raw': 100} for index, tile in enumerate(tiles)]
+    assert result['last_placement']['observed_after'] == {'x': 12, 'paths': []}
+    assert [call.kwargs for call in api.place_path_tile.call_args_list] == [
+        {**tile, 'surface_object': 2, 'railings_object': 3, 'is_queue': True} for tile in tiles
+    ]
+
+
+@pytest.mark.parametrize(('prefix', 'outcome', 'status'), [
+    (0, 'rejected', 'rejected'), (0, 'unknown', 'unknown'),
+    (1, 'rejected', 'partial'), (1, 'unknown', 'partial'),
+])
+def test_path_sequence_stops_at_failure_without_retry_or_rollback(tools, prefix, outcome, status):
+    mcp, api, _ = tools
+    api.place_path_tile.side_effect = [{'cost_raw': 100, 'observed_after': {}}] * prefix + [
+        APIError('Blocked', outcome=outcome, details={'code': 9}),
+    ]
+
+    async def scenario():
+        async with Client(mcp) as client:
+            return await call_object(client, 'place_path_sequence', allow_failure=True,
+                                     tiles=[{'x': x, 'y': 20, 'z': 14} for x in range(10, 13)],
+                                     surface_object=2, railings_object=3)
+
+    result = asyncio.run(scenario())
+
+    assert result['placed_count'] == result['failed_index'] == prefix
+    assert len(result['placements']) == prefix
+    assert result['operation_outcome'] == outcome
+    assert result['execution_status'] == status
+    assert result['state_status'] == 'unavailable'
+    assert result['error_details'] == {'code': 9}
+    assert api.place_path_tile.call_count == prefix + 1
+    api.remove_path_tile.assert_not_called()
+
+
+def test_path_sequence_stops_after_confirmed_action_with_unavailable_readback(tools):
+    mcp, api, _ = tools
+    api.place_path_tile.return_value = {'observed_after': None, 'state_error': 'Unavailable'}
+
+    async def scenario():
+        async with Client(mcp) as client:
+            return await call_object(client, 'place_path_sequence', allow_failure=True,
+                                     tiles=[{'x': x, 'y': 20, 'z': 14} for x in range(10, 13)],
+                                     surface_object=2, railings_object=3)
+
+    result = asyncio.run(scenario())
+
+    assert result['placed_count'] == 1
+    assert result['failed_index'] == 0
+    assert result['operation_outcome'] == 'confirmed'
+    assert result['execution_status'] == 'partial'
+    assert result['state_status'] == 'unavailable'
+    assert result['state_error'] == 'Unavailable'
+    assert api.place_path_tile.call_count == 1
+
+
+@pytest.mark.parametrize('tiles', [[], [{'x': 10, 'y': 20, 'z': 15}],
+                                   [{'x': 10, 'y': 20, 'z': 14}, {'x': -1, 'y': 20, 'z': 14}],
+                                   [{'x': 10, 'y': 20, 'z': 14}] * 257])
+def test_path_sequence_validates_entire_input_before_mutation(tools, tiles):
+    mcp, api, _ = tools
+
+    async def scenario():
+        async with Client(mcp) as client:
+            return await client.call_tool('place_path_sequence', {
+                'tiles': tiles, 'surface_object': 2, 'railings_object': 3,
+            }, raise_on_error=False)
+
+    result = asyncio.run(scenario())
+
+    assert result.is_error
+    api.place_path_tile.assert_not_called()
+
+
+def test_explicit_station_building_placement_forwards_relocation_guard_and_observations(tools):
+    mcp, api, _ = tools
+    expected = {'x': 10, 'y': 19, 'z': 14.0, 'direction': 1}
+    api.place_station_building.return_value = {'ride_id': 0, 'building': 'entrance', 'observed_after': {'stations': []}}
+
+    async def scenario():
+        async with Client(mcp) as client:
+            return await call_object(client, 'place_station_building', ride_id=0, building='entrance',
+                                     x=11, y=19, direction=1, expected_position=expected)
+
+    result = asyncio.run(scenario())
+
+    assert result['ride_id'] == 0
+    assert result['building'] == 'entrance'
+    assert result['operation_outcome'] == 'confirmed'
+    assert result['state_status'] == 'available'
+    api.place_station_building.assert_called_once_with(
+        ride_id=0, building='entrance', x=11, y=19, direction=1, expected_position=expected,
+    )
+
+
+@pytest.mark.parametrize('outcome', ['rejected', 'unknown'])
+def test_explicit_station_building_failure_preserves_identity_and_does_not_retry(tools, outcome):
+    mcp, api, _ = tools
+    api.place_station_building.side_effect = APIError('Unavailable', outcome=outcome, details={'code': 9})
+
+    async def scenario():
+        async with Client(mcp) as client:
+            return await call_object(client, 'place_station_building', allow_failure=True,
+                                     ride_id=0, building='exit', x=10, y=21, direction=3)
+
+    result = asyncio.run(scenario())
+
+    assert result['ride_id'] == 0
+    assert result['operation_outcome'] == outcome
+    assert result['error_details'] == {'code': 9}
+    assert api.place_station_building.call_count == 1

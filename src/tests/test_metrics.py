@@ -29,6 +29,7 @@ def api():
 def test_metrics_distinguish_queries_partial_builds_and_removals_without_contents(tmp_path, api, monkeypatch):
     sink = StringIO()
     api.place_path_tile.return_value = {'observed_after': {'paths': []}}
+    api.place_station_building.return_value = {'ride_id': 7, 'observed_after': {}}
     api.remove_path_tile.return_value = {'observed_after': {'paths': []}}
     api.place_track_piece.side_effect = [
         {'placeable': False, 'error': 9}, {}, APIError('Obstructed'),
@@ -53,6 +54,13 @@ def test_metrics_distinguish_queries_partial_builds_and_removals_without_content
                 'x': 10, 'y': 20, 'z': 14, 'surface_object': 0, 'railings_object': 0,
             })
             await client.call_tool('remove_path_tile', {'x': 10, 'y': 20, 'z': 14, 'expected_path': {}})
+            await client.call_tool('place_path_sequence', {
+                'tiles': [{'x': x, 'y': 20, 'z': 14} for x in range(11, 14)],
+                'surface_object': 0, 'railings_object': 0,
+            })
+            await client.call_tool('place_station_building', {
+                'ride_id': 7, 'building': 'entrance', 'x': 10, 'y': 19, 'direction': 1,
+            })
 
     monkeypatch.setattr(server.result_middleware, 'sink', sink)
     with patch.object(server, 'api_client', api):
@@ -64,9 +72,9 @@ def test_metrics_distinguish_queries_partial_builds_and_removals_without_content
     metrics = summarize_metrics(path)
 
     assert metrics['capture_complete'] is True
-    assert metrics['tool_calls'] == 6
-    assert metrics['requested_placements'] == 3
-    assert metrics['confirmed_placements'] == 2
+    assert metrics['tool_calls'] == 8
+    assert metrics['requested_placements'] == 7
+    assert metrics['confirmed_placements'] == 6
     assert metrics['rejected_placement_requests'] == 1
     assert metrics['confirmed_removals'] == 2
     assert metrics['query_candidates'] == 2

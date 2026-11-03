@@ -4,7 +4,7 @@ Build roller coasters in OpenRCT2 with an AI coding assistant. The agent designs
 
 ![movie-1080p-final](https://github.com/user-attachments/assets/77bf232a-91c0-4205-a3c2-5c0bb3af9896)
 
-Works with Claude Code, Codex, pi, opencode and other stdio MCP clients. Live-verified with **OpenRCT2 0.5.7 / scripting API 124 / plugin 0.13.0**.
+Works with Claude Code, Codex, pi, opencode and other stdio MCP clients. Live-verified with **OpenRCT2 0.5.7 / scripting API 124 / plugin 0.14.0**.
 
 ## How it works
 
@@ -17,25 +17,40 @@ Works with Claude Code, Codex, pi, opencode and other stdio MCP clients. Live-ve
 | Tool | Purpose |
 | --- | --- |
 | `create_ride` | Create a coaster and its first station piece. |
-| `place_track_segment` / `place_track_sequence` | Place one piece or a batch, stopping at the first failure. |
-| `check_track_segment` / `check_track_candidates` | Query one piece or independent alternatives without building. |
+| `place_track_segment` | Place one track piece. |
+| `place_track_sequence` | Place a batch of track pieces, stopping at the first failure. |
+| `check_track_segment` | Query one track piece without building. |
+| `check_track_candidates` | Query independent track alternatives without building. |
 | `get_coaster_state` | Inspect layout, history, endpoint, candidates and track occupancy. |
-| `get_map_area` / `get_coaster_view` | Inspect nearby terrain/objects or view the endpoint and elevation profile. |
+| `get_map_area` | Inspect nearby terrain and objects. |
+| `get_coaster_view` | View the endpoint surroundings or elevation profile. |
 | `preview_track_removal` | Identify the terminal piece before removal. |
-| `remove_terminal_piece` / `undo_last_piece` | Remove the terminal piece with an optional stale-state guard (not chronological undo). |
-| `place_entrance_exit` / `get_ride_station_access` | Place station buildings or inspect buildings and nearby paths. |
-| `start_ride_test` / `get_ride_test_report` / `get_ride_stats` | Test and inspect movement, ratings and train telemetry. |
-| `close_ride` / `reset_ride` | Close a ride or explicitly clear vehicles on a closed, guest-free ride. |
-| `get_loaded_ride_objects` / `set_ride_vehicles` | Discover loaded vehicles or configure trains/cars. |
-| `get_track_catalog` | List track descriptors and the server's supported subset. |
+| `remove_terminal_piece` | Remove the terminal piece with an optional stale-state guard. |
+| `undo_last_piece` | Alias for terminal-piece removal, not chronological undo. |
+| `place_station_building` | Place an entrance or exit at a chosen position, with a guard for relocation. |
+| `place_entrance_exit` | Automatically place missing station entrance/exit buildings. |
+| `get_ride_station_access` | Inspect station buildings and nearby paths. |
+| `start_ride_test` | Start testing a ride to calculate ratings. |
+| `get_ride_test_report` | Inspect test readiness and optionally observe train movement. |
+| `get_ride_stats` | Read ride status, ratings and train telemetry. |
+| `close_ride` | Close a ride before editing. |
+| `reset_ride` | Explicitly clear vehicles on a closed, guest-free ride. |
+| `get_loaded_ride_objects` | Discover loaded ride and vehicle objects. |
+| `set_ride_vehicles` | Configure train count or cars per train on a closed ride. |
+| `get_track_catalog` | List track descriptors, optionally only the server's supported subset. |
 | `get_park_status` | Read finances, guests, research and scenario status. |
-| `get_path_objects` / `get_path_area` | Discover path objects or inspect edges, heights and queue assignments. |
-| `place_path_tile` / `remove_path_tile` | Build a flat path or remove one using its current observation. |
-| `open_ride` / `get_ride_guest_report` | Open a ride or observe customer-counter progress. |
+| `get_path_objects` | Discover loaded path surfaces and railings. |
+| `get_path_area` | Inspect path edges, heights and queue assignments. |
+| `place_path_tile` | Build one flat ground-level path tile. |
+| `place_path_sequence` | Build a caller-chosen sequence of flat path tiles, stopping on failure. |
+| `remove_path_tile` | Remove a flat path using its current observation. |
+| `open_ride` | Open a ride through the normal game action. |
+| `get_ride_guest_report` | Observe customer-counter progress. |
 | `save_park` | Request a fresh checkpoint, with disk persistence still to be verified. |
 | `get_plugin_info` | Diagnose connection and plugin/protocol compatibility. |
 | `list_all_rides` | List existing rides. |
-| `delete_ride` / `delete_all_rides` | Demolish one ride or all rides. |
+| `delete_ride` | Demolish one ride by ID. |
+| `delete_all_rides` | Demolish all rides. |
 
 ## Setup
 

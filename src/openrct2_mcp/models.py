@@ -30,3 +30,13 @@ class TrackSegment(BaseModel):
     has_chain_lift: bool = False
     brake_speed: int = Field(default=0, ge=0, le=255)
     seat_rotation: int = Field(default=0, ge=0, le=255)
+
+
+class PathTile(BaseModel):
+    """One caller-chosen flat path tile, in tiles and height units of 8."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    x: int = Field(ge=0)
+    y: int = Field(ge=0)
+    z: int = Field(ge=0, le=254, multiple_of=2)

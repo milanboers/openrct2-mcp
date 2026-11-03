@@ -143,13 +143,27 @@ the game's second-close behaviour, which can also clear crash/test state, withou
 removing track. A nonzero or unknown guest count is rejected. Never double-close
 as a blind retry of an unknown outcome. After track
 edits, OpenRCT2 may invalidate station entrance/exit assignments. Call
-`place_entrance_exit` again as needed before testing. This tool chooses positions
-near the first station; it does not build connecting paths or guarantee guest
-access. Multiple-station operation is not supported.
+`place_entrance_exit` again as needed before testing. It preserves existing
+buildings and chooses positions for missing ones near the first station, on
+opposite sides. It stops on unknown acknowledgement rather than trying another
+position. For control over access routes, prefer `place_station_building`:
+
+- Choose `building: "entrance"` or `"exit"`, tile `x`, `y` and a direction facing
+  station track (0 west, 1 +y, 2 east, 3 -y). Height comes from station 0.
+- The target must face adjacent station track, perpendicular to its heading.
+  Both buildings can occupy different tiles on the same side, avoiding an
+  access point trapped inside a ground-level circuit.
+- Require a closed, guest-free ride. Moving an existing building requires its
+  exact `expected_position` from `get_ride_station_access`. A stale or missing
+  guard rejects. The normal action can reset vehicles and change queue edges.
+- Existing paths, buildings and scenery are not replaced or cleared. Check the
+  resulting station/path observations; placement does not guarantee guest access.
+
+Multiple-station operation is not supported.
 
 ## Testing and revision
 
-1. Complete the intended circuit and call `place_entrance_exit`.
+1. Complete the intended circuit and place station buildings explicitly or with `place_entrance_exit`.
 2. Call `start_ride_test`, then poll `get_ride_stats`.
 3. Check pause state, moving trains and `ratings_available`. A closed circuit
    alone does not prove operation. Ratings are null until calculated.
@@ -181,7 +195,12 @@ the game may limit them. Instantiated car counts are reported in ride stats.
 
 Testing is not guest operation. Discover modern path objects with `get_path_objects`
 and inspect paths with `get_path_area` and `get_ride_station_access`. Use
-`place_path_tile` only for authorized flat, dry ground-level routes. Existing paths
+`place_path_tile` or `place_path_sequence` only for authorized flat, dry ground-level routes.
+A path sequence takes 1–256 caller-chosen `{x, y, z}` tiles, sharing surface,
+railings and queue flag. It does not choose routes or require adjacency. It
+stops on failure or unavailable readback without rollback: retain `placed_count`,
+`placements` and `failed_index`, and inspect before retrying unknown outcomes.
+`last_placement` is that action's observation, not a final route-wide snapshot. Existing paths
 and scenery cannot be replaced or cleared; overhead track still requires game
 clearance. The game updates neighbor edges and queue assignments. These effects
 can extend beyond returned observations. For authorized removal, pass the exact

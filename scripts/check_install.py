@@ -22,7 +22,7 @@ REQUIRED_TOOLS = {
     "create_ride", "get_coaster_state", "get_coaster_view", "close_ride", "place_track_sequence",
     "get_ride_test_report", "check_track_candidates", "preview_track_removal", "remove_terminal_piece",
     "get_loaded_ride_objects", "get_park_status", "get_ride_station_access", "reset_ride",
-    "get_path_objects", "get_path_area", "place_path_tile", "remove_path_tile", "open_ride",
+    "place_station_building", "place_path_sequence", "get_path_objects", "get_path_area", "place_path_tile", "remove_path_tile", "open_ride",
     "get_ride_guest_report", "save_park",
 }
 
@@ -103,6 +103,12 @@ async def check_server(executable: Path, cwd: Path, fixture: Path) -> None:
                 assert state['stations'][0]['entrance']['status'] == 'absent'
                 access = await call_object(client, 'get_ride_station_access', ride_id=ride_id)
                 assert access['guest_access'] == 'unknown' and access['stations'] == state['stations']
+                entrance = await call_object(client, 'place_station_building', ride_id=ride_id,
+                                             building='entrance', x=67, y=65, direction=1)
+                assert entrance['operation_outcome'] == 'confirmed'
+                assert entrance['observed_after']['stations'][0]['entrance']['position']['y'] == 65
+                catalog = await call_json(client, 'get_track_catalog', supported_only=True)
+                assert catalog and all(piece['supported_name'] is not None for piece in catalog)
                 partial = await call_json(client, 'place_track_sequence', allow_failure=True, ride_id=ride_id,
                                           segments=[{'track_type': 'Flat'}] * 3, include_image=False, compact=True)
                 assert partial['operation_outcome'] == 'rejected' and partial['execution_status'] == 'partial'
@@ -138,11 +144,19 @@ async def check_server(executable: Path, cwd: Path, fixture: Path) -> None:
                 removed_path = await call_object(client, 'remove_path_tile', x=90, y=90, z=14,
                                                 expected_path=observation)
                 assert removed_path['observed_after']['paths'] == []
+                paths = await call_object(client, 'place_path_sequence', surface_object=0, railings_object=0,
+                                          tiles=[{'x': 90, 'y': y, 'z': 14} for y in range(90, 93)])
+                assert paths['placed_count'] == 3 and paths['execution_status'] == 'completed'
+                failed_paths = await call_object(client, 'place_path_sequence', allow_failure=True,
+                                                 surface_object=0, railings_object=0,
+                                                 tiles=[{'x': 90, 'y': y, 'z': 14} for y in [93, 92, 94]])
+                assert failed_paths['placed_count'] == 1 and failed_paths['failed_index'] == 1
+                assert failed_paths['execution_status'] == 'partial'
                 saved = await call_object(client, 'save_park', label='installed-contract')
                 assert saved['save_requested'] and saved['file_written'] == 'unknown'
             captured = summarize_metrics(metrics)
             assert captured['capture_complete'] is True
-            assert captured['confirmed_placements'] == 5 and captured['rejected_placement_requests'] == 1
+            assert captured['confirmed_placements'] == 10 and captured['rejected_placement_requests'] == 2
             assert captured['confirmed_removals'] == 2 and captured['response_image_base64_chars'] > 0
         except Exception:
             print(log.read_text(errors='replace')[-4000:], file=sys.stderr)

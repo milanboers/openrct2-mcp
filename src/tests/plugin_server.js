@@ -27,6 +27,7 @@ function makeTrack(tileX, tileY, trackType, direction, baseZ) {
     return {
         type: "track",
         trackType,
+        station: [1, 2, 3].includes(trackType) ? 0 : null,
         direction,
         baseZ,
         originZ: baseZ,
