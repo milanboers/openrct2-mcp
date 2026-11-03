@@ -126,7 +126,9 @@ actionHandlers["ridecreate"] = (args, cb) => {
     nextRideId++;
     rideTracks[nextRideId] = [];
     ridesList.push({ id: nextRideId, name: "Ride " + nextRideId, type: args.rideType, status: "closed",
-        stations: [], vehicles: [], excitement: -1, totalCustomers: 0, guestCount: 0 });
+        stations: [], vehicles: [], excitement: -1, totalCustomers: 0, guestCount: 0,
+        classification: "ride", object: { shopItem: 255 }, price: [10], runningCost: 4,
+        incomePerHour: 0, profit: -64, totalProfit: 0 });
     cb({ ride: nextRideId });
 };
 
@@ -208,6 +210,11 @@ actionHandlers["trackremove"] = (args, cb) => {
     cb({});
 };
 
+actionHandlers["ridesetprice"] = (args, cb) => {
+    map.getRide(args.ride).price[args.isPrimaryPrice ? 0 : 1] = args.price;
+    cb({});
+};
+
 actionHandlers["ridesetname"] = (args, cb) => {
     for (const r of ridesList) {
         if (r.id === args.ride) {
@@ -261,7 +268,7 @@ global.map = map;
 global.park = {
     name: process.argv.includes("--tcp") ? "mcp-install-" + require("crypto").randomUUID() : "MCP contract stub",
     cash: 10000, rating: 500, bankLoan: 0, maxBankLoan: 20000, entranceFee: 0,
-    guests: 0, value: 0, companyValue: 10000, getFlag: flag => flag === "noMoney",
+    guests: 0, value: 0, companyValue: 10000, getFlag: flag => flag === "freeParkEntry",
     research: { inventedItems: [{ type: "ride", object: 0, rideType: 52 }], uninventedItems: [],
         funding: 0, priorities: [], stage: "finished_all", progress: 0 },
 };

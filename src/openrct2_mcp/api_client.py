@@ -366,3 +366,15 @@ class OpenRCT2API:
 
     def save_park(self, filename: str) -> dict[str, Any]:
         return self._send_request('savePark', {'filename': filename})
+
+    def get_ride_finances(self, ride_id: int) -> dict[str, Any]:
+        result = self._send_request('getRideFinances', {'rideId': ride_id})
+        if not isinstance(result, dict):
+            raise APIError('Unexpected response format from getRideFinances', outcome='unknown')
+        return result
+
+    def set_ride_price(self, ride_id: int, **params: Any) -> dict[str, Any]:
+        result = self._send_request('setRidePrice', {'rideId': ride_id, **params})
+        if not isinstance(result, dict):
+            raise APIError('Unexpected response format from setRidePrice', outcome='unknown')
+        return result

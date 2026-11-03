@@ -4,7 +4,7 @@ Build roller coasters in OpenRCT2 with an AI coding assistant. The agent designs
 
 ![movie-1080p-final](https://github.com/user-attachments/assets/77bf232a-91c0-4205-a3c2-5c0bb3af9896)
 
-Works with Claude Code, Codex, pi, opencode and other stdio MCP clients. Live-verified with **OpenRCT2 0.5.7 / scripting API 124 / plugin 0.14.0**.
+Works with Claude Code, Codex, pi, opencode and other stdio MCP clients. Live-verified with **OpenRCT2 0.5.7 / scripting API 124 / plugin 0.15.0**.
 
 ## How it works
 
@@ -39,6 +39,8 @@ Works with Claude Code, Codex, pi, opencode and other stdio MCP clients. Live-ve
 | `set_ride_vehicles` | Configure train count or cars per train on a closed ride. |
 | `get_track_catalog` | List track descriptors, optionally only the server's supported subset. |
 | `get_park_status` | Read finances, guests, research and scenario status. |
+| `get_ride_finances` | Inspect prices, charging rules, upkeep and financial estimates/counters. |
+| `set_ride_price` | Set a guarded price through the game, with explicit consent for potentially shared prices. |
 | `get_path_objects` | Discover loaded path surfaces and railings. |
 | `get_path_area` | Inspect path edges, heights and queue assignments. |
 | `place_path_tile` | Build one flat ground-level path tile. |

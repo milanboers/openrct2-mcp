@@ -220,6 +220,23 @@ file before relying on it. Preserve the returned filename on an unknown outcome,
 and never automatically repeat a save request. No tool here loads a park or
 resets the game.
 
+## Pricing and economics
+
+Use `get_ride_finances` before changing prices. Raw money is **10 units per GBP**,
+not cents; `price_raw=30` means GBP 3 before display-currency conversion.
+`set_ride_price` requires the current stored `expected_price_raw` as a stale-value
+guard. It rejects disabled money and locked admission pricing without changing
+park rules. It does not require closing the ride. Item/photo/facility prices
+require explicit `allow_shared_price_changes=True` because they may propagate
+across the park. Inspect the reported price differences and readback; unknown or
+confirmed-but-unreadable outcomes must not be blindly retried.
+
+Hourly income/profit are game estimates, not lifetime revenue. Income subtracts
+merchandise costs; profit also subtracts upkeep. Running cost is billed per
+fortnight, with an hourly estimate of `x16`. `total_profit_raw` is a lifetime
+counter; lifetime gross revenue is unavailable. Null fields do not mean zero,
+and a few paid guests do not establish sustained profitability.
+
 ## Current limits
 
 Ride-specific availability remains unknown. Diagonals, inversions, arbitrary

@@ -1,12 +1,12 @@
 """Compatibility requirements shared by diagnostics and mutation preflight."""
 
-PLUGIN_VERSION = '0.14.0'
+PLUGIN_VERSION = '0.15.0'
 PROTOCOL_VERSION = 1
 READ_ENDPOINTS = frozenset({
     'getPluginInfo', 'listAllRides', 'getAllTrackSegments', 'getMapArea', 'getCoasterState',
     'getValidNextPieces', 'getTrackHistory', 'getRideStats', 'previewTrackRemoval',
     'getLoadedRideObjects', 'getParkStatus', 'getRideStationAccess', 'queryTrackPiece',
-    'getPathObjects', 'getPathArea',
+    'getPathObjects', 'getPathArea', 'getRideFinances',
 })
 
 

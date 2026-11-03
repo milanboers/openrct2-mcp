@@ -1,4 +1,4 @@
-var PLUGIN_VERSION = "0.14.0";
+var PLUGIN_VERSION = "0.15.0";
 
 function main() {
     "use strict";
@@ -526,6 +526,7 @@ function main() {
             date: { day: date.day, month: date.month, year: date.year, months_elapsed: date.monthsElapsed },
             park: {
                 open: park.getFlag("open"), no_money: park.getFlag("noMoney"),
+                free_park_entry: park.getFlag("freeParkEntry"), unlock_all_prices: park.getFlag("unlockAllPrices"),
                 cash_raw: numberOrNull(park.cash), bank_loan_raw: numberOrNull(park.bankLoan),
                 max_bank_loan_raw: numberOrNull(park.maxBankLoan), entrance_fee_raw: numberOrNull(park.entranceFee),
                 rating: numberOrNull(park.rating), guests: numberOrNull(park.guests),
@@ -580,6 +581,127 @@ function main() {
                 "Path observations are bounded and retain all heights and ghosts.",
                 "Nearby paths do not establish entrance, queue, exit or public-network connectivity.",
                 "No pathfinding or guest access guarantee is provided."] };
+    }
+
+    function moneyOrNull(value) {
+        // money64 undefined is outside JS's safe range. Also exclude the legacy
+        // money32 sentinel; neither is an actual negative operating result.
+        return Number.isSafeInteger(value) && value !== -2147483648 ? value : null;
+    }
+
+    function readRideFinances(rideId) {
+        if (context.mode !== "normal" || !Number.isInteger(rideId) || rideId < 0) {
+            throw new Error("Expected a normal park and nonnegative ride ID");
+        }
+        var ride = map.getRide(rideId);
+        if (!ride) throw new Error("Ride not found");
+        var noMoney = park.getFlag("noMoney");
+        var freeEntry = park.getFlag("freeParkEntry");
+        var unlockAll = park.getFlag("unlockAllPrices");
+        var classification = typeof ride.classification === "string" ? ride.classification : null;
+        var admissionUnlocked = freeEntry || unlockAll;
+        var object = ride.object;
+        var prices = Array.isArray(ride.price) ? ride.price.map(function (price, index) {
+            var allowed = classification === "ride" || classification === "stall" || classification === "facility"
+                ? !noMoney && (index !== 0 || classification !== "ride" || admissionUnlocked) : null;
+            return { index: index,
+                kind: classification === "ride" ? (index === 0 ? "admission" : "on_ride_photo") : "item_or_facility",
+                price_raw: moneyOrNull(price), charging_allowed: allowed,
+                effective_price_raw: allowed === false ? 0 : allowed === true ? moneyOrNull(price) : null,
+                // Common-price flags are not exposed by the scripting API.
+                // Ordinary ride admission has no shop item and cannot propagate.
+                shared_price_status: classification === "ride" && index === 0 && object && object.shopItem === 255
+                    ? "not_applicable" : "unknown" };
+        }) : null;
+        var cost = moneyOrNull(ride.runningCost);
+        var result = { ride_id: rideId, name: ride.name, ride_type: ride.type, classification: classification,
+            ride_status: ride.status, game_paused: context.paused, observed_game_tick: numberOrNull(date.ticksElapsed),
+            money_units: { raw_per_base_currency_unit: 10, base_currency: "GBP", display_currency_conversion: "not_applied" },
+            charging: { no_money: noMoney, free_park_entry: freeEntry, unlock_all_prices: unlockAll,
+                ride_admission_prices_unlocked: admissionUnlocked, park_entrance_fee_raw: moneyOrNull(park.entranceFee) },
+            prices: prices, total_customers: numberOrNull(ride.totalCustomers),
+            running_cost_per_fortnight_raw: cost, running_cost_per_hour_raw: cost === null ? null : moneyOrNull(cost * 16),
+            income_per_hour_estimate_raw: moneyOrNull(ride.incomePerHour),
+            profit_per_hour_estimate_raw: moneyOrNull(ride.profit), total_profit_raw: moneyOrNull(ride.totalProfit),
+            total_revenue_raw: null,
+            limitations: [
+                "Raw money uses 10 units per GBP, not cents. Display currencies may apply conversion.",
+                "Income/profit per hour are game estimates from recent customers, updated about every 960 game ticks. Income subtracts merchandise costs, not upkeep; profit also subtracts upkeep.",
+                "Running cost is billed fortnightly; the game's hourly estimate multiplies it by 16. These are game accounting periods, not wall-clock billing guarantees.",
+                "Total profit is the engine's lifetime counter, not gross revenue. Lifetime gross revenue is not exposed. Null values are unavailable, not zero.",
+                "Effective prices describe park rules, not every guest payment: vouchers, free rides and purchases can differ.",
+                "Common-price flags are unavailable. Item/photo prices may propagate to other rides; unchanged values do not establish that sharing is disabled."
+            ] };
+        result.unavailable_fields = ["running_cost_per_fortnight_raw", "running_cost_per_hour_raw",
+            "income_per_hour_estimate_raw", "profit_per_hour_estimate_raw", "total_profit_raw", "total_revenue_raw"
+        ].filter(function (key) { return result[key] === null; });
+        return result;
+    }
+
+    function observeRidePrices() {
+        var prices = {};
+        map.rides.forEach(function (ride) {
+            prices[ride.id] = Array.isArray(ride.price) ? ride.price.map(moneyOrNull) : null;
+        });
+        return prices;
+    }
+
+    function observedPriceChanges(before, after) {
+        var changes = [];
+        var complete = Object.keys(before).length === Object.keys(after).length;
+        Object.keys(before).forEach(function (id) {
+            if (!before[id] || !after[id] || before[id].length !== after[id].length) { complete = false; return; }
+            before[id].forEach(function (price, index) {
+                if (price === null || after[id][index] === null) { complete = false; return; }
+                if (price !== after[id][index]) changes.push({ ride_id: Number(id), price_index: index,
+                    before_raw: price, after_raw: after[id][index] });
+            });
+        });
+        return { changes: changes, complete: complete };
+    }
+
+    function setRidePrice(params, callback) {
+        var before, allPrices;
+        try {
+            if (!Number.isInteger(params.price_raw) || params.price_raw < 0 || params.price_raw > 200 ||
+                !Number.isInteger(params.expected_price_raw) || params.expected_price_raw < 0 ||
+                (params.price_index !== 0 && params.price_index !== 1) ||
+                typeof params.allow_shared_price_changes !== "boolean") {
+                throw new Error("Expected raw price 0-200, current expected_price_raw, price_index 0/1 and boolean shared-price consent");
+            }
+            before = readRideFinances(params.rideId);
+            var selected = before.prices && before.prices[params.price_index];
+            if (!selected || selected.price_raw === null) throw new Error("Selected price is unavailable or not active for this ride");
+            if (selected.price_raw !== params.expected_price_raw) throw new Error("Stale expected_price_raw; inspect current finances");
+            if (selected.charging_allowed !== true) throw new Error("Charging is disabled by park money/admission rules or is unknown");
+            if (selected.shared_price_status !== "not_applicable" && !params.allow_shared_price_changes) {
+                throw new Error("Item/photo/facility prices may affect other rides; explicit allow_shared_price_changes is required");
+            }
+            allPrices = observeRidePrices();
+        } catch (error) {
+            callback({ success: false, error: String(error) }); return;
+        }
+        context.executeAction("ridesetprice", { ride: params.rideId, price: params.price_raw,
+            isPrimaryPrice: params.price_index === 0 }, function (result) {
+            if (!result || result.error) {
+                callback({ success: false, outcome: result ? "rejected" : "unknown",
+                    error: gameError(result), error_details: gameErrorDetails(result) }); return;
+            }
+            var payload = { ride_id: params.rideId, price_index: params.price_index, requested_price_raw: params.price_raw,
+                observed_before: before, observed_after: null, stored_price_matches_request: null,
+                observed_price_changes: null, price_change_observations_complete: false,
+                limitations: ["Price differences are before/after observations, not attribution against concurrent edits.",
+                    "Only active, scripting-visible price slots are observed. The engine may also update hidden photo-price slots."] };
+            try {
+                payload.observed_after = readRideFinances(params.rideId);
+                var price = payload.observed_after.prices && payload.observed_after.prices[params.price_index];
+                payload.stored_price_matches_request = price && price.price_raw !== null ? price.price_raw === params.price_raw : null;
+                var observed = observedPriceChanges(allPrices, observeRidePrices());
+                payload.observed_price_changes = observed.changes;
+                payload.price_change_observations_complete = observed.complete;
+            } catch (error) { payload.state_error = String(error); }
+            callback({ success: true, payload: payload });
+        });
     }
 
     function pathObservation(el, x, y) {
@@ -810,6 +932,15 @@ function main() {
                 });
                 break;
 
+            case "getRideFinances":
+                try { callback({ success: true, payload: readRideFinances(request.params.rideId) }); }
+                catch (error) { callback({ success: false, error: String(error) }); }
+                break;
+
+            case "setRidePrice":
+                setRidePrice(request.params, callback);
+                break;
+
             case "getAllTrackSegments":
                 // Retrieve all available track segments.
                 var segments = context.getAllTrackSegments();
@@ -1033,7 +1164,7 @@ function main() {
                     capabilities: ["coaster_snapshot", "close_ride", "endpoint_removal", "cardinal_geometry",
                         "guarded_append", "removal_preview", "track_options_readback", "loaded_ride_objects",
                         "park_status", "station_access_observations", "ride_object_research", "train_observations", "explicit_ride_reset",
-                        "flat_paths", "open_ride", "checkpoint_request", "explicit_station_buildings"]
+                        "flat_paths", "open_ride", "checkpoint_request", "explicit_station_buildings", "ride_finances", "ride_prices"]
                 } });
                 break;
 

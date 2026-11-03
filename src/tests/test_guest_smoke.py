@@ -44,7 +44,7 @@ def test_guest_smoke_records_partial_failure_without_retry_or_cleanup(tmp_path):
 
     assert result == 1
     assert json.loads((output / 'failure.json').read_text()) == {'error': 'Ride 7 retained', 'partial_work_retained': True}
-    run.assert_awaited_once_with(8081, output, 240)
+    run.assert_awaited_once_with(8081, output, 240, None)
 
 
 @pytest.mark.parametrize('timeout', ['0', 'nan', 'inf'])
@@ -168,3 +168,30 @@ def test_guest_smoke_fixture_rejects_unknown_track_names(coaster_fixture):
 
     with pytest.raises(ValidationError, match='Unknown track names'):
         script.CoasterFixture.model_validate(invalid)
+
+
+@pytest.mark.parametrize('price', ['0', '201'])
+def test_guest_smoke_rejects_invalid_paid_price_before_game_contact(tmp_path, price):
+    output = tmp_path / 'smoke'
+    with patch('sys.argv', ['guest_smoke_test.py', '--output-dir', str(output), '--price-raw', price, '--yes']), \
+         patch.object(script, 'run', AsyncMock()) as run:
+        with pytest.raises(SystemExit):
+            script.main()
+
+    assert not output.exists()
+    run.assert_not_awaited()
+
+
+@pytest.mark.parametrize('flags', [
+    {'no_money': True, 'free_park_entry': True},
+    {'no_money': False, 'free_park_entry': False, 'unlock_all_prices': False},
+])
+def test_paid_guest_smoke_rejects_disabled_charging_before_construction(tmp_path, flags):
+    ready = {'ready': True, 'park': {'scenario': {'name': 'sandbox'}, 'park': flags}}
+    with patch.object(script, 'Client'), \
+         patch.object(script, 'inspect_readiness', AsyncMock(return_value=ready)), \
+         patch.object(script, 'build_coaster', AsyncMock()) as build:
+        with pytest.raises(RuntimeError, match='money-enabled sandbox'):
+            asyncio.run(script.run(8081, tmp_path, 240, price_raw=30))
+
+    build.assert_not_awaited()

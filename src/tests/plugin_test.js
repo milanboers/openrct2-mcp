@@ -859,6 +859,90 @@ assert(request("savePark", { filename: saveName }).payload.file_written === "unk
 assert(!request("savePark", { filename: saveName }).success && !request("savePark", { filename: "../existing" }).success && saves.length === 1,
     "checkpoint rejects reused names and path traversal");
 
+
+// Financial readings preserve accounting periods and unavailable values. Pricing
+// uses an engine action, not direct property assignment or altered park rules.
+const financeRides = [
+    { id: 0, name: "Paid coaster", type: 52, classification: "ride", status: "open",
+        object: { shopItem: 255 }, price: [10, 15], runningCost: 4, incomePerHour: 96,
+        profit: 32, totalProfit: -12, totalCustomers: 3 },
+    { id: 1, name: "Other photo ride", type: 52, classification: "ride", status: "closed",
+        object: { shopItem: 255 }, price: [0, 12] },
+];
+map.getRide = id => financeRides.find(ride => ride.id === id) || null;
+map.rides.forEach = fn => financeRides.forEach(fn);
+const financeFlags = new Set(["freeParkEntry"]);
+park.getFlag = flag => financeFlags.has(flag);
+let priceActions = 0;
+actionHandlers.ridesetprice = (args, cb) => {
+    priceActions++;
+    assert(args.ride === 0 && Number.isInteger(args.price), "price action retains raw engine units and ride ID zero");
+    const index = args.isPrimaryPrice ? 0 : 1;
+    // Simulate the engine's common-photo-price cascade.
+    const affected = index === 0 ? [financeRides[0]] : financeRides;
+    affected.forEach(ride => { ride.price[index] = args.price; });
+    cb({});
+};
+const finances = request("getRideFinances", { rideId: 0 }).payload;
+assert(finances.prices[0].price_raw === 10 && finances.prices[0].effective_price_raw === 10 &&
+    finances.money_units.raw_per_base_currency_unit === 10 && finances.running_cost_per_fortnight_raw === 4 &&
+    finances.running_cost_per_hour_raw === 64 && finances.income_per_hour_estimate_raw === 96 &&
+    finances.profit_per_hour_estimate_raw === 32 && finances.total_profit_raw === -12 &&
+    finances.total_revenue_raw === null && priceActions === 0,
+    "finance read preserves raw tenths, negative lifetime profit and game-estimated accounting periods without mutation");
+assert(request("getRideFinances", { rideId: 1 }).payload.running_cost_per_fortnight_raw === null,
+    "unavailable financial fields are not invented as zero");
+financeRides[1].runningCost = -9223372036854775808;
+financeRides[1].profit = -2147483648;
+assert(request("getRideFinances", { rideId: 1 }).payload.running_cost_per_hour_raw === null &&
+    request("getRideFinances", { rideId: 1 }).payload.profit_per_hour_estimate_raw === null,
+    "undefined money sentinels are not presented as enormous negative finances");
+const priceParams = { rideId: 0, price_raw: 20, expected_price_raw: 10, price_index: 0, allow_shared_price_changes: false };
+for (const invalid of [
+    { price_raw: -1 }, { price_raw: 201 }, { price_raw: 1.5 }, { price_raw: true },
+    { price_index: 2 }, { expected_price_raw: undefined }, { expected_price_raw: 11 },
+    { allow_shared_price_changes: 1 }, { rideId: 999 },
+]) assert(!request("setRidePrice", { ...priceParams, ...invalid }).success && priceActions === 0,
+    "invalid/stale financial input cannot submit a price action");
+for (const noMoney of [false, true]) {
+    financeFlags.clear();
+    if (noMoney) financeFlags.add("noMoney");
+    const restricted = request("getRideFinances", { rideId: 0 }).payload;
+    assert(restricted.prices[0].effective_price_raw === 0 && !restricted.prices[0].charging_allowed &&
+        !request("setRidePrice", priceParams).success && priceActions === 0,
+        "locked admission or no-money mode rejects price actions, not just misleadingly storing a price");
+}
+financeFlags.clear(); financeFlags.add("unlockAllPrices");
+const priced = request("setRidePrice", priceParams);
+assert(priced.success && priced.payload.stored_price_matches_request &&
+    priced.payload.observed_after.prices[0].effective_price_raw === 20 && priceActions === 1 &&
+    financeRides[0].status === "open" && priced.payload.observed_price_changes.length === 1 &&
+    priced.payload.observed_price_changes[0].before_raw === 10,
+    "normal price setting reads back the effective price and changes no operating status");
+const photoParams = { ...priceParams, price_index: 1, price_raw: 18, expected_price_raw: 15 };
+assert(!request("setRidePrice", photoParams).success && priceActions === 1,
+    "possibly shared prices require explicit consent before any engine action");
+const shared = request("setRidePrice", { ...photoParams, allow_shared_price_changes: true });
+assert(shared.success && shared.payload.observed_after.prices[1].price_raw === 18 && priceActions === 2 &&
+    shared.payload.observed_price_changes.some(change => change.ride_id === 1 && change.before_raw === 12 && change.after_raw === 18),
+    "shared-price consent permits the normal cascade and reports observed changes to other rides");
+actionHandlers.ridesetprice = (args, cb) => { priceActions++; cb({ error: 9, errorTitle: "Cannot price", errorMessage: "Game refusal" }); };
+const rejectedPrice = request("setRidePrice", { ...priceParams, expected_price_raw: 20 });
+assert(!rejectedPrice.success && rejectedPrice.outcome === "rejected" && rejectedPrice.error_details.code === 9,
+    "game price errors retain structured rejection details");
+actionHandlers.ridesetprice = (args, cb) => { priceActions++; cb(null); };
+const unknownPrice = request("setRidePrice", { ...priceParams, expected_price_raw: 20 });
+assert(!unknownPrice.success && unknownPrice.outcome === "unknown" && priceActions === 4,
+    "unknown price acknowledgement is not automatically retried");
+actionHandlers.ridesetprice = (args, cb) => {
+    map.getRide = () => { throw new Error("Finance readback unavailable"); };
+    cb({});
+};
+const confirmedPrice = request("setRidePrice", { ...priceParams, expected_price_raw: 20 });
+assert(confirmedPrice.success && confirmedPrice.payload.observed_after === null &&
+    confirmedPrice.payload.state_error.includes("readback unavailable"),
+    "acknowledged price change survives unavailable financial readback");
+
 // ---------------------------------------------------------------------------
 
 if (failures > 0) {

@@ -29,6 +29,8 @@ Three pieces talk to each other:
 - `reset_ride`: Explicitly clear vehicles on an already closed, guest-free ride before substantial editing. No track is removed.
 - `get_ride_station_access`: Inspect station buildings and bounded nearby path edges, heights and queue assignments (not proof of connectivity).
 - `get_park_status`: Read park finances, guests, date, research and scenario objective/status without changing anything.
+- `get_ride_finances`: Read prices, charging restrictions and ride accounting, preserving unavailable values.
+- `set_ride_price`: Set an active price with a stale-value guard and explicit consent for potentially shared prices.
 - `get_path_objects` / `get_path_area`: Discover loaded modern path objects and inspect bounded path edges, heights, queues and ghosts.
 - `place_path_tile` / `place_path_sequence`: Build one flat ground-level path tile or a caller-supplied sequence. No routing, replacement, slopes, bridges or scenery clearing.
 - `remove_path_tile`: Remove a flat path using an exact observed-path guard.
@@ -207,7 +209,7 @@ The yellow arrow marks the current endpoint heading. The green arrow marks the t
 
 `get_coaster_view(ride_id, view="elevation")` plots heights at track-piece boundaries. The first sample is the track origin, and subsequent samples use the game's next-connection heights (rather than the lowered origins of downward pieces). Equal X spacing does **not** mean equal track length, and lines omit geometry within a piece. The response includes the height range and sample count.
 
-Both views require a complete traversal of a connected layout. Neither establishes clearance, ride support, speed or G-forces. The endpoint view includes objects at all heights; consult their base/clearance heights in `map_area`. Ride and map reads are separate, so the park can change between them. These views require the matching plugin; the current plugin release is `0.14.0`.
+Both views require a complete traversal of a connected layout. Neither establishes clearance, ride support, speed or G-forces. The endpoint view includes objects at all heights; consult their base/clearance heights in `map_area`. Ride and map reads are separate, so the park can change between them. These views require the matching plugin; the current plugin release is `0.15.0`.
 
 ## Tips
 
@@ -288,6 +290,28 @@ The result includes action cost in raw game units and bounded station/path obser
 
 `place_entrance_exit` remains a convenience helper. It preserves existing buildings, tries missing buildings on opposite sides of first-station track, and stops on unknown action acknowledgement rather than trying another position. A failure retains confirmed progress in `error_details`.
 
+## Ride finances and prices
+
+`get_ride_finances(ride_id)` is read-only and works for rides, stalls and facilities. It reports:
+
+- Active `prices` with stored `price_raw`, park-rule `effective_price_raw`, `charging_allowed` and `shared_price_status`. Index 0 is admission for a ride, otherwise a primary item/facility price. Index 1 is an active photo or secondary item. Hidden/inactive slots are not exposed.
+- Money/admission rules: `no_money`, `free_park_entry`, `unlock_all_prices` and whether ride admission prices are unlocked. Paid park entry without unlocked ride pricing makes ride admission effectively free; item/photo pricing is separate.
+- `running_cost_per_fortnight_raw`, plus the game's hourly equivalent (`x16`). These are game accounting periods, not wall-clock billing guarantees.
+- `income_per_hour_estimate_raw` and `profit_per_hour_estimate_raw`, calculated from recent customers and refreshed about every 960 game ticks. **Income already subtracts merchandise costs**; profit also subtracts upkeep. Neither is a lifetime gross revenue counter or a prediction of future profitability.
+- `total_profit_raw`, the engine's lifetime counter. `total_revenue_raw` is `null`: the scripting API does not expose lifetime gross revenue. Missing fields and undefined-money sentinels remain `null`, never invented as zero; `unavailable_fields` lists unavailable accounting fields.
+
+Raw money uses **10 units per GBP**, not cents. For example, `price_raw=30` is GBP 3.00 before display-currency conversion. The tool does not convert the user's chosen display currency.
+
+`set_ride_price(ride_id, price_raw, expected_price_raw, price_index=0, allow_shared_price_changes=False)` uses the normal `ridesetprice` action. The engine's price range is 0–200 raw units (GBP 0–20). Read the current stored price first and supply it as `expected_price_raw`; stale values reject before mutation. The guard is not a reservation. Price changes do not close/reset the ride or require it to be closed.
+
+The wrapper rejects disabled-money mode, locked ride admission pricing and unknown/unavailable slots before sending an action. The engine action alone does not enforce all these charging restrictions, so an acknowledged stored price by itself is not proof that guests can be charged. The tools never change admission rules, cash, research or objectives.
+
+Common-price flags are not exposed. Ordinary ride admission with no shop item cannot propagate, but item/photo/facility pricing requires explicit `allow_shared_price_changes=True`. This authorizes possible changes to other rides. The response returns bounded-by-park-size `observed_price_changes` for active, visible slots across the park, plus `price_change_observations_complete`. The engine may also update hidden photo-price slots; these are not included. Before/after differences do not rule out concurrent edits, and no differences do not prove that shared pricing is disabled.
+
+Action acknowledgement, readback and price matching are separate: inspect `operation_outcome`, `state_status` and `stored_price_matches_request`. A confirmed action with missing or mismatched readback reports `success: false`; do not automatically resend it. No rollback is attempted.
+
+These semantics were checked against OpenRCT2 0.5.7: [money units](https://github.com/OpenRCT2/OpenRCT2/blob/v0.5.7/src/openrct2/core/Money.hpp), [ride accounting and effective admission prices](https://github.com/OpenRCT2/OpenRCT2/blob/v0.5.7/src/openrct2/ride/Ride.cpp), and [price action/shared-price propagation](https://github.com/OpenRCT2/OpenRCT2/blob/v0.5.7/src/openrct2/actions/ride/RideSetPriceAction.cpp).
+
 ## Flat paths, guests and checkpoints
 
 The first path-construction scope is one flat ground level using modern path surface and railings objects. Inspect park-local indices with `get_path_objects`, then use `place_path_tile(x, y, z, surface_object, railings_object, is_queue=False)`. Coordinates are tiles, with Z in units of 8; path Z must be even. Ground must be flat and dry. Existing paths and scenery are not replaced or cleared. Sufficiently elevated track can remain overhead, subject to the game's clearance checks.
@@ -311,6 +335,8 @@ uv run --locked python scripts/guest_smoke_test.py --output-dir /tmp/guest-smoke
 ```
 
 The script asks for consent (`--yes` explicitly skips the prompt), refuses existing rides and reused output directories, builds the fixed coaster in `scenarios/guest-coaster.json`, connects explicit flat queue/exit routes to the sandbox's existing public-path anchor, checks reciprocal edges and queue assignment, opens the ride and observes customer completion. It requests a checkpoint and retains logs and partial work on failure. It never resets the park, deletes existing rides, or changes cash/research. `--port` selects another plugin instance and `--timeout` bounds construction testing and guest observation separately.
+
+For a **money-enabled copy** of the same empty sandbox, add `--price-raw 30` to verify paid rides. This refuses disabled-money or locked-admission parks before building. It sets the price through MCP, observes completed customers, an increase in the lifetime profit counter and a positive hourly income estimate. Financial snapshots are retained with the observations. It never enables money, changes charging rules or grants cash itself. An observed increase is evidence of receipts, not a gross-revenue ledger or proof of sustainable profitability; upkeep and delayed statistics matter.
 
 This checks a known end-to-end workflow, not an automatic designer or general pathfinder. The fixture's geometry and station positions match this sandbox and its path routes; changing them requires updating and live-checking the routes too. Checkpoint acknowledgement alone does not verify the saved file.
 
@@ -340,7 +366,7 @@ A healthy server writes a completion marker on normal exit; interrupted captures
 
 ## Compatibility and security
 
-- Live-verified against OpenRCT2 **0.5.7**, scripting API **124**, with plugin **0.14.0**. Other versions are not yet verified.
+- Live-verified against OpenRCT2 **0.5.7**, scripting API **124**, with plugin **0.15.0**. Other versions are not yet verified.
 - `get_plugin_info` reports the loaded version and protocol capabilities. `matches` checks the plugin release; `protocol_compatible` checks the wire protocol. Package release numbers and wire protocol versions are separate. The current protocol is `1`. The plugin requires scripting API 124 or newer; only the listed game version is live-verified.
 - The plugin listens only on `127.0.0.1:8080`. It has **no authentication** and is intended for a trusted local machine. Do not expose or forward this port to other machines. Local processes can still invoke destructive endpoints.
 - The listener limits buffered request data to 1 MiB. The Python client limits response lines to 16 MiB and discards broken/timed-out connections without automatically retrying commands.

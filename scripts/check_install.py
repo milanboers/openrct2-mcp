@@ -23,7 +23,7 @@ REQUIRED_TOOLS = {
     "get_ride_test_report", "check_track_candidates", "preview_track_removal", "remove_terminal_piece",
     "get_loaded_ride_objects", "get_park_status", "get_ride_station_access", "reset_ride",
     "place_station_building", "place_path_sequence", "get_path_objects", "get_path_area", "place_path_tile", "remove_path_tile", "open_ride",
-    "get_ride_guest_report", "save_park",
+    "get_ride_guest_report", "save_park", "get_ride_finances", "set_ride_price",
 }
 
 
@@ -101,6 +101,16 @@ async def check_server(executable: Path, cwd: Path, fixture: Path) -> None:
                 ride_id = state['ride_id']
                 assert state['piece_count'] == 1 and 'pieces' not in state
                 assert state['stations'][0]['entrance']['status'] == 'absent'
+                finances = await call_object(client, 'get_ride_finances', ride_id=ride_id)
+                assert finances['prices'][0]['price_raw'] == 10
+                assert finances['running_cost_per_hour_raw'] == 64
+                priced = await call_object(client, 'set_ride_price', ride_id=ride_id,
+                                           price_raw=20, expected_price_raw=10)
+                assert priced['operation_outcome'] == 'confirmed' and priced['stored_price_matches_request']
+                assert priced['observed_after']['prices'][0]['effective_price_raw'] == 20
+                stale_price = await call_object(client, 'set_ride_price', allow_failure=True,
+                                                ride_id=ride_id, price_raw=30, expected_price_raw=10)
+                assert stale_price['operation_outcome'] == 'rejected'
                 access = await call_object(client, 'get_ride_station_access', ride_id=ride_id)
                 assert access['guest_access'] == 'unknown' and access['stations'] == state['stations']
                 entrance = await call_object(client, 'place_station_building', ride_id=ride_id,

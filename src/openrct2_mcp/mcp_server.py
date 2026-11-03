@@ -17,6 +17,7 @@ from .models import Endpoint, RemovalTarget, TrackSegment
 from .inspection import compact_map_area, test_report
 from .metrics import ResultMiddleware
 from .park_tools import register_park_tools
+from .finance_tools import register_finance_tools
 from .protocol import PLUGIN_VERSION, PROTOCOL_VERSION
 from .results import mutation_failure, mutation_status
 from .visualization import (
@@ -857,6 +858,7 @@ def list_all_rides() -> Any:
 
 
 register_park_tools(mcp, lambda: api_client, get_ride_test_report)
+register_finance_tools(mcp, lambda: api_client)
 
 
 def main() -> None:

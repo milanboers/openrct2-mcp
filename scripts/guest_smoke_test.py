@@ -105,7 +105,7 @@ async def build_coaster(client, fixture, timeout):
         raise RuntimeError(f'Construction stopped; ride {ride_id} is retained for inspection: {error}') from error
 
 
-async def run(port, output, timeout):
+async def run(port, output, timeout, price_raw=None):
     transport = StdioTransport(command='uv', args=['--directory', str(ROOT), 'run', '--locked',
                                'openrct2-mcp', '--port', str(port)], keep_alive=False)
     async with Client(transport, timeout=30) as client:
@@ -113,6 +113,11 @@ async def run(port, output, timeout):
         write_new(output / 'readiness.json', ready)
         if not ready['ready'] or ready['park']['scenario']['name'] != 'sandbox':
             raise RuntimeError('Load the intended fresh, unpaused bundled sandbox; existing work is never deleted')
+        if price_raw is not None:
+            flags = ready['park']['park']
+            if (flags.get('no_money') is not False or
+                    not (flags.get('free_park_entry') is True or flags.get('unlock_all_prices') is True)):
+                raise RuntimeError('Paid smoke requires a money-enabled sandbox with unlocked ride admission pricing')
         anchor = await call_object(client, 'get_path_area', x=146, y=67, radius=0)
         if not any(p['base_z'] == 14 and p['is_queue'] is False and p['is_ghost'] is False
                    and p['slope_direction'] is None and p['edges'] & 4 for p in anchor['paths']):
@@ -131,6 +136,16 @@ async def run(port, output, timeout):
         if not all(type(baseline.get(key)) is int and baseline[key] == 0
                    for key in ('guest_count', 'total_customers')):
             raise RuntimeError('Expected a guest-free test coaster before connecting paths')
+        financial_baseline = None
+        if price_raw is not None:
+            finances = await call_object(client, 'get_ride_finances', ride_id=ride_id)
+            priced = await call_object(client, 'set_ride_price', ride_id=ride_id, price_raw=price_raw,
+                                       expected_price_raw=finances['prices'][0]['price_raw'])
+            write_new(output / 'price-action.json', priced)
+            financial_baseline = priced['observed_after']
+            if (financial_baseline['total_profit_raw'] is None or
+                    financial_baseline['prices'][0]['effective_price_raw'] != price_raw):
+                raise RuntimeError('Paid smoke requires available profit and the requested effective admission price')
         public = [(x, 67) for x in range(145, 111, -1)] + [(117, y) for y in range(62, 67)]
         queue = [(x, 58) for x in range(117, 111, -1)] + [(112, y) for y in range(59, 67)]
         objects = await call_object(client, 'get_path_objects')
@@ -172,21 +187,32 @@ async def run(port, output, timeout):
         await call_object(client, 'close_ride', ride_id=ride_id)
         await call_object(client, 'open_ride', ride_id=ride_id)
         deadline = time.monotonic() + timeout
+        paid_income_observed = False
+        finances = None
         with (output / 'observations.jsonl').open('x') as observations:
             while True:
                 report = await call_object(client, 'get_ride_guest_report', ride_id=ride_id,
                                            observe_seconds=min(10, max(0, deadline - time.monotonic())))
+                if financial_baseline is not None:
+                    finances = await call_object(client, 'get_ride_finances', ride_id=ride_id)
+                    paid_income_observed |= (finances['total_profit_raw'] is not None and
+                                             finances['total_profit_raw'] > financial_baseline['total_profit_raw'])
+                    report['financial_observation'] = finances
                 observations.write(json.dumps(report) + '\n')
                 observations.flush()
                 if (report['completion_counter_supported'] and report['counter_valid']
                         and report['open_unpaused_throughout']
-                        and report['latest_stats']['total_customers'] > baseline['total_customers']):
+                        and report['latest_stats']['total_customers'] > baseline['total_customers']
+                        and (financial_baseline is None or (paid_income_observed and
+                             finances['income_per_hour_estimate_raw'] is not None and
+                             finances['income_per_hour_estimate_raw'] > 0))):
                     break
                 if time.monotonic() >= deadline:
-                    raise RuntimeError(f'No completed customers observed; ride {ride_id} retained. This is not proof of an access failure.')
+                    raise RuntimeError(f'Required customer/paid-income evidence not observed; ride {ride_id} retained. This is not proof of an access failure.')
         checkpoint = await call_object(client, 'save_park', label='guest-connected')
         result = {'passed': True, 'run_kind': 'guest_smoke_test', 'ride_id': ride_id,
                   'checks': checks, 'baseline': baseline, 'final_observation': report, 'checkpoint': checkpoint,
+                  'financial_baseline': financial_baseline, 'paid_income_observed': paid_income_observed,
                   'limitations': ['Specific flat routes to the bundled sandbox anchor were checked, not arbitrary park-wide connectivity.',
                                  'Customer completion and exit-route connectivity were observed, not individual guest trajectories.',
                                  'Checkpoint file persistence must be verified on disk. No scenario-finance or objective success is claimed.']}
@@ -199,10 +225,13 @@ def main():
     parser.add_argument('--port', type=int, default=8080)
     parser.add_argument('--output-dir', required=True, type=Path)
     parser.add_argument('--timeout', type=float, default=240)
+    parser.add_argument('--price-raw', type=int, help='verify paid rides at this raw admission price (1-200); requires money-enabled sandbox')
     parser.add_argument('--yes', action='store_true')
     args = parser.parse_args()
     if not 1 <= args.port <= 65535 or not math.isfinite(args.timeout) or args.timeout <= 0:
         parser.error('port must be 1-65535 and timeout must be finite and positive')
+    if args.price_raw is not None and not 1 <= args.price_raw <= 200:
+        parser.error('price-raw must be 1-200 (10 raw units per GBP)')
     if not args.yes and input('Build a test coaster and paths in the fresh sandbox, open it and request a checkpoint? (yes/no): ').strip().lower() != 'yes':
         return 130
     try:
@@ -211,7 +240,7 @@ def main():
         print(f'Refusing output directory: {error}', file=sys.stderr)
         return 2
     try:
-        result = asyncio.run(run(args.port, args.output_dir, args.timeout))
+        result = asyncio.run(run(args.port, args.output_dir, args.timeout, args.price_raw))
         print(f'Guest smoke test passed: ride {result["ride_id"]}; evidence in {args.output_dir}')
         return 0
     except Exception as error:
