@@ -29,6 +29,7 @@ function makeTrack(tileX, tileY, trackType, direction, baseZ, opts) {
     return {
         type: "track",
         trackType,
+        sequence: 0,
         direction,
         baseZ,
         // The iterator reports the piece's ORIGIN z, which for downward pieces
@@ -162,10 +163,10 @@ let listener = {
     on: (evt, fn) => {
         if (evt === "connection") listener.connectionHandler = fn;
     },
-    listen: () => {},
+    listen: (port, host) => { listener.boundHost = host; },
 };
 
-function request(endpoint, params) {
+function rawRequest(data) {
     const writes = [];
     const conn = {
         on: (evt, fn) => {
@@ -173,10 +174,15 @@ function request(endpoint, params) {
             conn.handlers[evt] = fn;
         },
         write: (s) => writes.push(s),
+        end: () => { conn.ended = true; },
     };
     listener.connectionHandler(conn);
-    conn.handlers.data(JSON.stringify({ endpoint: endpoint, params: params || {} }) + "\n");
-    return JSON.parse(writes[0]);
+    for (const chunk of Array.isArray(data) ? data : [data]) conn.handlers.data(chunk);
+    return { responses: writes.map((line) => JSON.parse(line)), ended: conn.ended };
+}
+
+function request(endpoint, params) {
+    return rawRequest(JSON.stringify({ endpoint, params: params || {} }) + "\n").responses[0];
 }
 
 // Load the real plugin and start it.
@@ -185,6 +191,14 @@ eval(fs.readFileSync(pluginPath, "utf8"));
 global.__plugin.main();
 const connHandler = listener.connectionHandler;
 assert(connHandler != null, "plugin starts and listens");
+assert(listener.boundHost === "127.0.0.1", "plugin only binds loopback");
+for (const data of ["null\n", "[]\n", "{}\n", '{"endpoint":"getPluginInfo","params":[]}\n', "bad json\n"]) {
+    assert(rawRequest(data).responses[0].success === false, "invalid envelope returns a controlled error");
+}
+const framed = rawRequest(['{"endpoint":"getPlugin', 'Info"}\n{"endpoint":"getPluginInfo"}\n']);
+assert(framed.responses.length === 2 && framed.responses.every(r => r.success), "fragmented and coalesced requests are framed");
+const oversized = rawRequest("x".repeat(1024 * 1024 + 1));
+assert(oversized.ended && !oversized.responses[0].success, "oversized requests close the connection");
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -253,7 +267,7 @@ assert(request("getMapArea", { x: 10, y: 11, radius: 9 }).success === false, "ma
 
 // Ride statistics distinguish uncalculated ratings from real zero values.
 map.getRide = (id) => id === 10 ? {
-    status: "testing", excitement: -1, intensity: 0, nausea: 0, vehicles: [42, 43],
+    status: "testing", excitement: -1, intensity: 0, nausea: 0, vehicles: [42, 43, 65535],
 } : null;
 map.getEntity = (id) => ({
     42: { id: 42, velocity: 1234, nextCarOnTrain: 44 },
@@ -264,7 +278,7 @@ let stats = request("getRideStats", { rideId: 10 });
 assert(JSON.stringify(stats.payload) === JSON.stringify({
     ride_status: "testing", game_paused: true, ratings_available: false,
     excitement: null, intensity: null, nausea: null,
-    vehicles: [{ id: 42, velocity: 1234, cars: 2 }, { id: 43, velocity: null, cars: null }],
+    vehicles: [{ id: 42, velocity: 1234, cars: 2 }],
     max_speed_mph: null, average_speed_mph: null, ride_time_seconds: null, ride_length_metres: null,
     max_positive_vertical_g: null, max_negative_vertical_g: null, max_lateral_g: null, drops: null, lift_hills: null,
 }), "uncalculated ratings include test diagnostics and vehicle velocities");
@@ -353,7 +367,9 @@ assert(blockedState.validPieces.length === 0 && blockedState.candidateStatus ===
 // Report when the game's actual endpoint disagrees with the prediction.
 clearTiles();
 actionHandlers["trackplace"] = (args, cb) => {
-    place(args.ride, makeTrack(10, 11, 0, 2, args.z));
+    const placed = makeTrack(10, 11, 0, 0, args.z);
+    placed.next = makeTrack(11, 11, 0, 0, args.z);
+    place(args.ride, placed);
     cb({ position: { x: args.x, y: args.y, z: args.z } });
 };
 const mismatchResult = request("placeTrackPiece", { ...trackArgs, trackType: 0, hasChainLift: false });
@@ -479,6 +495,46 @@ for (const [direction, flatX, flatY, turnX, turnY, turnDirection] of [
     assert(predicted[16].x === turnX && predicted[16].y === turnY && predicted[16].direction === turnDirection,
         "turn endpoint prediction at direction " + direction);
 }
+
+// One snapshot scans the map once, and rejects disconnected construction.
+clearTiles();
+const connected = [makeTrack(30, 30, 2, 0, 112), makeTrack(29, 30, 0, 0, 112)];
+linkSeq(connected);
+for (const el of connected) place(7, el);
+map.rides.forEach = fn => fn({ id: 7, type: 52 });
+const originalGetTile = map.getTile;
+let tileReads = 0;
+map.getTile = (...args) => { tileReads++; return originalGetTile(...args); };
+const snapshot = request("getCoasterState", { rideId: 7 });
+map.getTile = originalGetTile;
+assert(snapshot.success && snapshot.payload.history.length === 2 && snapshot.payload.rideType === 52 &&
+    snapshot.payload.layoutStatus === "complete", "snapshot contains candidates, history and ride metadata");
+assert(tileReads < 128 * 128 + 20, "snapshot performs only one full map scan");
+place(7, makeTrack(50, 50, 0, 0, 112));
+const disconnected = request("getCoasterState", { rideId: 7 });
+assert(disconnected.payload.layoutStatus === "disconnected" && disconnected.payload.validPieces.length === 0,
+    "disconnected layouts do not silently offer a construction endpoint");
+assert(!request("deleteLastTrackPiece", { rideId: 7 }).success, "disconnected layouts cannot be implicitly edited");
+assert(!request("getCoasterState", { rideId: 999 }).success, "missing rides fail explicitly");
+
+// Stacked matching pieces must be distinguished by their iterator height.
+clearTiles();
+const stacked = [makeTrack(31, 30, 2, 0, 112), makeTrack(30, 30, 0, 0, 112), makeTrack(30, 30, 0, 0, 144)];
+linkSeq(stacked);
+for (const el of stacked) place(7, el);
+let exactRemove = null;
+actionHandlers.trackremove = (args, cb) => { exactRemove = args; cb({}); };
+assert(request("deleteLastTrackPiece", { rideId: 7 }).success && exactRemove.z === 144,
+    "endpoint removal selects the correct height among stacked pieces");
+let statusArgs = null;
+actionHandlers.ridesetstatus = (args, cb) => { statusArgs = args; cb({}); };
+assert(request("closeRide", { rideId: 7 }).success && statusArgs.status === 0,
+    "closing a ride uses the game action");
+actionHandlers.trackplace = (args, cb) => cb({ error: 9, errorTitle: "Cannot build", errorMessage: "Track is obstructed" });
+assert(request("placeTrackPiece", trackArgs).error === "Failed to place track piece: Cannot build: Track is obstructed",
+    "placement preserves the game's error title and message");
+actionHandlers.ridedemolish = (args, cb) => cb({ error: 1, errorMessage: "Demolition refused" });
+assert(request("deleteAllRides").outcome === "partial", "bulk demolition surfaces failures");
 
 // ---------------------------------------------------------------------------
 

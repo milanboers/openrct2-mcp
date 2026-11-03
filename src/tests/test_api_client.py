@@ -105,3 +105,48 @@ class TestOpenRCT2API:
                 api_client.list_all_rides()
 
             assert str(exc_info.value) == "Connection failed"
+
+
+@pytest.mark.parametrize('response', [b'not json\n', b'null\n', b'{}\n', b'', None])
+def test_broken_response_discards_connection_without_retry(response):
+    import socket
+
+    client = OpenRCT2API()
+    local, peer = socket.socketpair()
+    local.settimeout(0.02)
+    client._sock = local
+    client._file_obj = local.makefile('r')
+    try:
+        if response:
+            peer.sendall(response)
+        if response == b'':
+            peer.shutdown(socket.SHUT_WR)
+        with pytest.raises(APIError) as failure:
+            client.delete_ride(7)
+
+        assert failure.value.outcome == 'unknown'
+        assert client._sock is None
+        assert client._file_obj is None
+        assert peer.recv(4096).count(b'"deleteRide"') == 1
+    finally:
+        client._close_connection()
+        peer.close()
+
+
+def test_game_rejection_preserves_connection_and_error():
+    import socket
+
+    client = OpenRCT2API()
+    local, peer = socket.socketpair()
+    client._sock = local
+    client._file_obj = local.makefile('r')
+    try:
+        peer.sendall(b'{"success":false,"error":"Ride must be closed"}\n')
+        with pytest.raises(APIError, match='Ride must be closed') as failure:
+            client.delete_ride(7)
+
+        assert failure.value.outcome == 'rejected'
+        assert client._sock is local
+    finally:
+        client._close_connection()
+        peer.close()

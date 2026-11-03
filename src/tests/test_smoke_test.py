@@ -20,6 +20,8 @@ class FakeClient:
         self.rides = rides or []
         self.mismatches = mismatches or []
         self.calls = []
+        self.closed = False
+        self.endpoints = []
 
     async def __aenter__(self):
         return self
@@ -29,14 +31,32 @@ class FakeClient:
 
     async def call_tool(self, name, arguments):
         self.calls.append((name, arguments))
+        if name == 'close_ride':
+            self.closed = True
+        elif name == 'start_ride_test':
+            self.closed = False
+        if name == 'create_ride':
+            self.endpoints = [{'x': 10, 'y': 10, 'z': 14, 'direction': 0}]
+        elif name == 'place_track_segment':
+            previous = self.endpoints[-1]
+            self.endpoints.append({**previous, 'x': previous['x'] - 1})
+        elif name == 'undo_last_piece' and len(self.endpoints) > 1:
+            self.endpoints.pop()
         responses = {
+            "get_plugin_info": {"matches": True, "protocol_compatible": True},
+            "close_ride": {"success": True},
+            "undo_last_piece": {"success": True, "current_endpoint": self.endpoints[-1] if self.endpoints else {}},
+            "place_track_segment": {"success": True, "is_circuit_complete": True,
+                                    "current_endpoint": self.endpoints[-1] if self.endpoints else {}},
+            "delete_ride": {"success": True},
             "list_all_rides": self.rides,
-            "create_ride": {"success": True, "ride_id": 7},
-            "place_track_sequence": {"success": True, "is_circuit_complete": True, "placed_count": 41,
+            "create_ride": {"success": True, "ride_id": 7, "current_endpoint": self.endpoints[-1] if self.endpoints else {}},
+            "place_track_sequence": {"success": True, "is_circuit_complete": True, "placed_count": len(arguments.get('segments', [])),
                                      "endpoint_prediction_mismatches": self.mismatches},
             "place_entrance_exit": {"success": True},
             "start_ride_test": {"success": True},
-            "get_ride_stats": {"ratings_available": True, "vehicles": [{"velocity": 100}]},
+            "get_ride_stats": {"ratings_available": True, "vehicles": [{"velocity": 100}],
+                               "ride_status": "closed" if self.closed else "testing"},
         }
         if name == "list_all_rides" and not self.rides:
             return SimpleNamespace(content=[], is_error=False)
@@ -49,10 +69,11 @@ def test_smoke_test_builds_and_tests_a_coaster(capsys):
         asyncio.run(smoke_test.run(10))
 
     assert [name for name, _ in client.calls] == [
-        "list_all_rides", "create_ride", "place_track_sequence", "place_entrance_exit",
-        "start_ride_test", "get_ride_stats",
+        "list_all_rides", "get_plugin_info", "create_ride", "place_track_sequence", "place_entrance_exit",
+        "start_ride_test", "get_ride_stats", "close_ride", "get_ride_stats", "undo_last_piece",
+        "place_track_segment", "place_entrance_exit", "start_ride_test", "get_ride_stats",
     ]
-    segments = client.calls[2][1]["segments"]
+    segments = client.calls[3][1]["segments"]
     assert len(segments) == 41
     assert segments[2] == {"track_type": "FlatToUp25", "has_chain_lift": True}
     assert "Smoke test passed" in capsys.readouterr().out
@@ -64,7 +85,7 @@ def test_smoke_test_fails_on_endpoint_mismatch():
         with pytest.raises(RuntimeError, match="Endpoint prediction mismatches"):
             asyncio.run(smoke_test.run(10))
 
-    assert [name for name, _ in client.calls] == ['list_all_rides', 'create_ride', 'place_track_sequence']
+    assert [name for name, _ in client.calls] == ['list_all_rides', 'get_plugin_info', 'create_ride', 'place_track_sequence']
 
 
 def test_smoke_test_refuses_park_with_rides():
@@ -74,3 +95,14 @@ def test_smoke_test_refuses_park_with_rides():
             asyncio.run(smoke_test.run(10))
 
     assert [name for name, _ in client.calls] == ["list_all_rides"]
+
+
+def test_endpoint_checks_cover_rotations_and_delete_only_created_rides():
+    client = FakeClient()
+    asyncio.run(smoke_test.verify_endpoints(client))
+
+    assert [arguments['direction'] for name, arguments in client.calls if name == 'create_ride'] == [0, 1, 2, 3]
+    assert [name for name, _ in client.calls] == (
+        ['create_ride'] + ['place_track_segment'] * 13 + ['undo_last_piece'] * 13 + ['delete_ride']
+    ) * 4
+    assert all(arguments['ride_id'] == 7 for name, arguments in client.calls if name == 'delete_ride')

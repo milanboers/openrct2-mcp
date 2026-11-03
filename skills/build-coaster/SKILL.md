@@ -1,128 +1,117 @@
 ---
 name: build-coaster
-description: Specialized guidance for building roller coasters in OpenRCT2 using the Ride Creation MCP server. Use when an agent needs to design, place track pieces, or complete a coaster circuit.
+description: Build, inspect, edit and test roller coasters in OpenRCT2 through the Ride Creation MCP server.
 ---
 
 # OpenRCT2 Coaster Builder
 
-This skill provides comprehensive procedural knowledge for building effective and valid roller coasters using the OpenRCT2 Ride Creation MCP server.
+Use the tools to implement the user's design. Track layout, station length,
+banking, lift placement and rating targets are design choices, not fixed rules.
 
-## 🛑 THE GOLDEN RULE 🛑
-You **MUST ONLY** select a `track_type` (its `name`) that appears in the `valid_pieces` list of the **previous** tool response. These are supported cardinal types with matching connection shape, not a guarantee of ride support or clearance. Diagonal and inverted track are not supported by this filter.
+## Before building
 
-## Ride Types
+- Confirm the intended park is loaded. Do not infer this from an empty ride list
+  alone: park loading is asynchronous.
+- Call `get_plugin_info` to check `matches`, `protocol_compatible`, `park_name`,
+  `map_size`, and `game_paused`. A plugin update requires a game restart.
+- Use `list_all_rides` to identify existing rides. Do not delete existing work
+  unless the user asks.
+- The tested default is `ride_type: 52` (Wooden Roller Coaster). Other known IDs
+  include 51 (Twister), 54 (Steel Wild Mouse), 15 (Looping), 17 (Mine Train),
+  19 (Corkscrew), 44 (Vertical Drop), 3 (Inverted), and 57 (Flying). Track support
+  for these rides is not guaranteed. Do not guess ride type numbers.
+- Inspect the intended station area with `get_map_area`. Coordinates are tiles,
+  with `z` in units of 8 game coordinates. Directions are 0 west, 1 +y,
+  2 east, 3 -y.
 
-`create_ride` takes a numeric `ride_type`. The supported default is **52 = Wooden Roller Coaster** — the track validation is tuned for it, so always use it unless told otherwise.
+## Construction contract
 
-| ID | Ride Type |
-|----|-----------|
-| 52 | Wooden Roller Coaster (default) |
-| 51 | Twister Roller Coaster |
-| 54 | Steel Wild Mouse |
-| 0 | Spiral Roller Coaster |
-| 1 | Stand-up Roller Coaster |
-| 3 | Inverted Roller Coaster |
-| 13 | Bobsleigh Coaster |
-| 15 | Looping Roller Coaster |
-| 17 | Mine Train Coaster |
-| 19 | Corkscrew Roller Coaster |
-| 44 | Vertical Drop Roller Coaster |
-| 57 | Flying Roller Coaster |
+`create_ride` places the first station piece. Extend it using station candidates
+from the returned state. OpenRCT2 reclassifies begin/middle/end station pieces.
+Station extensions stop being offered after the first non-station piece.
 
-Do **not** invent ride type numbers — use only the table above. The state returned by `create_ride` includes `ride_type_name`, so double-check it matches what the user asked for.
+Select track names from the latest `valid_pieces`. Each candidate includes a
+predicted endpoint. These are supported cardinal pieces with matching pitch and
+banking, **not** guarantees of ride support or clearance. `ride_support: unknown`
+is deliberate. Diagonal and inverted endpoints are not supported.
 
-## Building Workflow (Follow the Cursor)
+- Pitch changes require transitions: `FlatToUp25` before `Up25`,
+  `Up25ToFlat` to level out, and the corresponding down transitions for drops.
+- A chain lift uses `has_chain_lift: true` on its pieces, including transitions.
+- `check_track_segment` asks the game whether a candidate fits without placing
+  it. Success is not a reservation or proof of ride support/connectivity.
+- `place_track_sequence` takes 1–256 segment objects and checks each against the
+  current state. It stops on failure without rolling back previous placements.
+- `current_endpoint` gives the construction position and direction. Its
+  `distance` is relative to the track start. Matching coordinates alone does
+  not prove closure: check `is_circuit_complete`, then test the ride.
+- `endpoint_prediction_mismatches` means the game and prediction disagree.
+  Use the actual state and inspect the discrepancy rather than trusting further
+  predictions for that geometry.
 
-The server uses **Alignment Snapping**. You only select track types; coordinates are handled for you.
+## Reading state
 
-The server returns an image and a text-based map of actual track-element tiles. Numbers are element base heights in game Z units; multiple heights on one tile are separated by `/`. The shaded tiles in the image show the same footprint; the connecting lines are approximate. Occupied tiles are not collision-clearance data, and an empty tile may still be obstructed.
+`get_coaster_state` returns one game snapshot. Use `include_image: false` and
+`compact: true` when only the endpoint, candidates and piece count are needed.
+The default includes full history, occupancy and a top-down image.
 
-Use `get_map_area` to inspect nearby terrain and objects, and `check_track_segment` to ask the game whether a compatible piece fits before placing it. A successful check is not a reservation: the park may change before placement.
+- `candidate_status` explains unavailable candidates or circuit completion.
+  An empty list may mean unsupported geometry, not that nothing can connect.
+- `layout_status: disconnected`, `ambiguous`, or `truncated` blocks implicit
+  editing. Arbitrary disconnected layouts and endpoint selection are not
+  supported. Resolve these in-game before continuing.
+- `track_elements` and the text grid show actual element base heights, **not
+  collision clearance**. Multiple heights on one tile are separated by `/`.
+  Image lines are approximate. Images are bounded and large grids are omitted.
+- `get_map_area` supplies nearby terrain and object heights. Empty occupancy
+  does not establish that a track segment will fit.
 
-For a planned run of pieces, use `place_track_sequence` with a list of objects such as `{"track_type": "Up25", "has_chain_lift": true}`. The server checks each piece against the latest valid list and returns one final state and image. It stops at the first failure without rolling back earlier pieces. `placed_count` counts confirmed placements, but a failed piece may also have been placed; inspect the final state and `failed_index` before retrying. Use single-piece placement when the next move depends on the image or endpoint.
+## Errors and editing
 
-### 1. The Station Sequence
-`create_ride` places the first station piece for you. The game decides whether each piece counts as begin, middle, or end based on the station's shape — so just build the station as a straight line:
-1. **Middle pieces**: Place 2-4 **MiddleStation** pieces, heading straight out of the station.
-2. **The Cap**: Place one **EndStation** piece to finish the station.
+Read `success`, `operation_outcome`, and the game error before deciding what to
+retry. `operation_outcome` describes the requested mutation (or failing segment
+of a sequence), not whether the state refresh succeeded:
 
-Station pieces stay available until you lay your first non-station piece — that's when the station is locked. The station length is flexible: the circuit is complete when the track returns to the station, whatever it looks like.
+- `confirmed`: the game acknowledged the mutation. A later state read can still
+  fail, in which case `state_error` describes that failure.
+- `rejected`: the mutation was not performed. Earlier sequence pieces remain.
+- `unknown`: communication or response handling failed. Inspect state before
+  retrying. Never automatically resend a mutation.
+- `partial`: bulk demolition had failures or only one entrance/exit was placed.
+  Inspect the returned details and remaining park state.
 
-### 2. Pitch Transitions (CRITICAL)
-You cannot jump from Flat to Steep. You **MUST** use transition pieces:
+`placed_count` counts confirmed sequence placements. `failed_index` identifies
+where execution stopped. A confirmed action can still have failed endpoint
+inspection, so these fields must be read together.
 
-| Start State | Target State | **Required Transition Piece** |
-|-------------|--------------|-------------------------------|
-| **Flat**    | **Up 25°**   | **`FlatToUp25`**              |
-| **Up 25°**  | **Flat**     | **`Up25ToFlat`**              |
-| **Flat**    | **Down 25°** | **`FlatToDown25`**            |
-| **Down 25°**| **Flat**     | **`Down25ToFlat`**            |
+`undo_last_piece` is **endpoint removal, not chronological undo**. For an open
+connected layout it removes the terminal piece. On a closed circuit with a
+begin station it removes the piece immediately before that station. Without a
+begin station, the traversal start is selected from map order. Inspect state
+before removing anything. A rejected placement does not require an undo.
 
-*Example: To start a drop, you MUST place `FlatToDown25` before you can place `Down25`.*
+Close the ride with `close_ride` before editing or changing vehicles. After track
+edits, OpenRCT2 may invalidate station entrance/exit assignments. Call
+`place_entrance_exit` again as needed before testing. This tool chooses positions
+near the first station; it does not build connecting paths or guarantee guest
+access. Multiple-station operation is not supported.
 
-### 3. The Lifthill
-- For a chain lift, set `has_chain_lift: true` on each lift segment, including the transition. Not every uphill section needs a chain.
-- **Sequence**: `FlatToUp25` -> `Up25` (Repeat) -> `Up25ToFlat`.
+## Testing and revision
 
-### 4. Navigation & Loop Closure
-- **Spatial Data**: Check `current_endpoint.distance`.
-- **Plan ahead**: Every entry in `valid_pieces` has an `endpoint` — the tile and direction where that piece would leave you. Use it to plan turns and pick the piece that brings you closest to home.
-- **Closure**: Steer back to `distance: {x: 0, y: 0, z: 0}`.
-- **Banking**: Banked turns (`FlatToLeftBank`, `FlatToRightBank`) can reduce lateral forces. Choose banking according to the intended design and test results.
+1. Complete the intended circuit and call `place_entrance_exit`.
+2. Call `start_ride_test`, then poll `get_ride_stats`.
+3. Check pause state, moving trains and `ratings_available`. A closed circuit
+   alone does not prove operation. Ratings are null until calculated.
+4. Close the ride, revise as needed, restore entrance/exit assignments and test
+   again. Choose revisions based on the user's design goals and observed stats.
 
-## Working with an Existing Park
+Ratings use the game's decimal scale (for example 6.52). Train velocities are
+raw game values, not mph or km/h. `set_ride_vehicles` requests train/car counts;
+the game may limit them. Instantiated car counts are reported in ride stats.
 
-You can build a coaster from scratch **or continue one that already has track**. The server reads the track straight from the game, so loading a save with existing coasters works fine — pick the ride you want and keep building, or call `create_ride` for a new one anywhere on the map.
+## Current limits
 
-## When a Placement Fails
-
-Even a piece from `valid_pieces` can be rejected if it would hit the ground, scenery, or existing track. The error message tells you why:
-
-| Error | Likely cause | What to do |
-|-------|--------------|------------|
-| `Location occupied` | Building into the ground or existing track | `undo_last_piece` and adjust your line |
-| `Invalid height` | Too high above or too deep below the ground | Raise or lower the layout, or `undo_last_piece` |
-| `Not enough space` / `Path blocked` | Scenery or another ride is in the way | Change direction, or `undo_last_piece` |
-| `Track piece not available for this ride type` | The piece isn't legal for this ride | Pick a different piece from `valid_pieces` |
-
-After a failure the server returns the full state again — read `valid_pieces` and the height map, adjust, and retry. Don't retry the same piece at the same spot.
-
-## Track Types Reference
-
-### Basic Pieces
-- `Flat`
-- `BeginStation` (The first piece placed by `create_ride`)
-- `MiddleStation`
-- `EndStation`
-
-### Slopes & Transitions
-- **UP**: `FlatToUp25` (Transition) -> `Up25` (Slope) -> `Up25ToFlat` (Transition back to Flat)
-- **STEEP UP**: `Up25ToUp60` (Transition) -> `Up60` (Steep Slope) -> `Up60ToUp25` (Transition back)
-- **DOWN**: `FlatToDown25` (Transition) -> `Down25` (Slope) -> `Down25ToFlat` (Transition back to Flat)
-- **STEEP DOWN**: `Down25ToDown60` (Transition) -> `Down60` (Steep Slope) -> `Down60ToDown25` (Transition back)
-
-### Turns & Banking
-- `LeftQuarterTurn5Tiles` / `RightQuarterTurn5Tiles`: Large Turn (Radius 5)
-- `LeftQuarterTurn3Tiles` / `RightQuarterTurn3Tiles`: Small Turn (Radius 3)
-- `FlatToLeftBank` / `FlatToRightBank`: Bank Start (Transition to Left/Right)
-- `LeftBankToFlat` / `RightBankToFlat`: Bank End (Transition back to Flat)
-- `BankedLeftQuarterTurn5Tiles` / `BankedRightQuarterTurn5Tiles`: Large Banked Turn
-- `LeftBankedQuarterTurn3Tiles` / `RightBankedQuarterTurn3Tiles`: Small Banked Turn
-
-## Navigation Heuristics
-
-| Offset | Meaning | Corrective Action |
-|--------|---------|-------------------|
-| `distance.z > 0` | Too high | Use Down transitions (`FlatToDown25`) then Slopes (`Down25`). |
-| `distance.z < 0` | Too low | You built too deep! `undo_last_piece`. |
-| Large `x` or `y` | Far away | Turn towards the origin (`0, 0`). |
-
-## Ratings (get_ride_stats)
-
-After `start_ride_test`, `get_ride_stats` returns ratings on the game's decimal scale. Ratings are `null` until calculated; check `ratings_available`, `ride_status`, and `game_paused`. Vehicle velocities are raw game values, not mph or km/h. A good coaster roughly scores:
-
-- **excitement** around 6–8
-- **intensity** around 4–6 (higher is more forceful, but too high feels rough)
-- **nausea** as low as possible (under ~2)
-
-If excitement is low, add hills, airtime, or a bigger drop. If intensity or nausea are too high, bank your turns more and keep the layout smoother.
+Ride-specific availability remains unknown. Diagonals, inversions, arbitrary
+endpoint selection, multiple-station operation and guest path construction are
+not supported by this workflow. Keep design decisions with the agent, and ask
+the user before discarding park work or using destructive tools.

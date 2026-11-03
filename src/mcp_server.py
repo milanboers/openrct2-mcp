@@ -84,13 +84,14 @@ def _get_ride_type(ride_id: int) -> int:
     """Helper to fetch ride type from the game by ID."""
     try:
         rides = api_client.list_all_rides()
-        for ride in rides:
-            if ride.get("id") == ride_id:
-                type_val = ride.get("type")
-                return int(type_val) if type_val is not None else 52
-    except Exception as e:
-        logger.warning(f"Failed to fetch ride type for {ride_id}: {e}")
-    return 52  # Fallback to default (Wooden Roller Coaster)
+    except APIError as e:
+        raise APIError(f"Cannot determine ride type: {e}") from e
+    for ride in rides:
+        if ride.get("id") == ride_id:
+            if not isinstance(ride.get("type"), int):
+                raise APIError(f"Ride {ride_id} has no valid ride type")
+            return ride["type"]
+    raise APIError(f"Ride {ride_id} not found")
 
 
 def generate_coaster_image(
@@ -125,21 +126,21 @@ def generate_coaster_image(
     min_y -= padding
     max_y += padding
 
-    tile_size = 40
-    width = (max_x - min_x + 1) * tile_size
-    height = (max_y - min_y + 1) * tile_size
+    tile_size = min(40, 1600 / max(max_x - min_x + 1, max_y - min_y + 1))
+    width = max(1, round((max_x - min_x + 1) * tile_size))
+    height = max(1, round((max_y - min_y + 1) * tile_size))
 
     img_main = Image.new("RGB", (width, height), color=(40, 40, 40))
     draw = ImageDraw.Draw(img_main)
 
     # Function to convert tile coords to pixel coords in image (center of tile)
-    def to_img_center(tx: int, ty: int) -> tuple[int, int]:
+    def to_img_center(tx: int, ty: int) -> tuple[float, float]:
         return (
             (tx - min_x) * tile_size + tile_size // 2,
             (ty - min_y) * tile_size + tile_size // 2,
         )
 
-    def to_img_topleft(tx: int, ty: int) -> tuple[int, int]:
+    def to_img_topleft(tx: int, ty: int) -> tuple[float, float]:
         return (tx - min_x) * tile_size, (ty - min_y) * tile_size
 
     # Draw grid
@@ -153,7 +154,8 @@ def generate_coaster_image(
     # Actual track-element tiles are a footprint, not collision clearance.
     for element in track_elements or []:
         ix, iy = to_img_topleft(element["x"], element["y"])
-        draw.rectangle([ix + 2, iy + 2, ix + tile_size - 2, iy + tile_size - 2], fill=(70, 70, 90))
+        inset = min(2, tile_size / 4)
+        draw.rectangle([ix + inset, iy + inset, ix + tile_size - inset, iy + tile_size - inset], fill=(70, 70, 90))
 
     # Determine height range for color scaling
     min_z_val = min(p[2] for p in points)
@@ -208,7 +210,7 @@ def generate_coaster_image(
             outline = (0, 255, 0)  # Green for start
 
         # Draw a small box for the node
-        box_size = 10
+        box_size = min(10, tile_size / 4)
         cx, cy = to_img_center(px, py)
         draw.rectangle(
             [cx - box_size, cy - box_size, cx + box_size, cy + box_size],
@@ -224,7 +226,8 @@ def generate_coaster_image(
         elif ptype == "C":
             label = f"C:{pz}"
 
-        draw.text((ix + 2, iy + 2), label, fill=(255, 255, 255))
+        if tile_size >= 16:
+            draw.text((ix + 2, iy + 2), label, fill=(255, 255, 255))
 
     buf_final = io.BytesIO()
     img_main.save(buf_final, format="PNG")
@@ -245,6 +248,8 @@ def generate_height_map(track_elements: Optional[list[dict[str, Any]]]) -> str:
     max_x = max(x for x, _ in grid)
     min_y = min(y for _, y in grid)
     max_y = max(y for _, y in grid)
+    if (max_x - min_x + 1) * (max_y - min_y + 1) > 4096:
+        return "Track occupancy grid omitted (over 4096 tiles). Use track_elements or get_map_area."
     labels = {key: "/".join(f"{z:g}" for z in sorted(heights)) for key, heights in grid.items()}
     width = max(4, max(len(label) for label in labels.values()) + 1, len(str(min_x)) + 1, len(str(max_x)) + 1)
     lines = ["Track-element base heights (not collision clearance):"]
@@ -258,8 +263,9 @@ def generate_height_map(track_elements: Optional[list[dict[str, Any]]]) -> str:
 
 
 def format_coaster_state(
-    ride_id: int, api_payload: dict[str, Any], valid_piece_ids: list[int]
-) -> Tuple[dict[str, Any], MCPImage]:
+    ride_id: int, api_payload: dict[str, Any], valid_piece_ids: list[int], *,
+    include_image: bool = True, compact: bool = False,
+) -> Tuple[dict[str, Any], Optional[MCPImage]]:
     """
     Format the authoritative coaster state from the API payload.
     Calculates distances and circuit completion on the fly.
@@ -297,18 +303,7 @@ def format_coaster_state(
             }
         )
 
-    # Calculate circuit completion. The plugin reports the authoritative value
-    # (it knows the station layout); fall back to a geometric check if absent.
-    is_circuit_complete = api_payload.get("isCircuitComplete")
-    if is_circuit_complete is None and start_pos and next_endpoint:
-        is_circuit_complete = (
-            next_endpoint.get("x") == start_pos.get("x")
-            and next_endpoint.get("y") == start_pos.get("y")
-            and next_endpoint.get("z") == start_pos.get("z")
-            and next_endpoint.get("direction") == start_pos.get("direction")
-        )
-    if is_circuit_complete is None:
-        is_circuit_complete = False
+    is_circuit_complete = api_payload.get("isCircuitComplete", False)
 
     # Enrich next_endpoint with distance
     if start_pos and next_endpoint:
@@ -320,8 +315,8 @@ def format_coaster_state(
 
     # Generate coaster image visualization
     track_elements = api_payload.get("trackElements")
-    coaster_image = generate_coaster_image(history, next_endpoint, track_elements)
-    height_map = generate_height_map(track_elements)
+    coaster_image = generate_coaster_image(history, next_endpoint, track_elements) if include_image else None
+    height_map = generate_height_map(track_elements) if not compact else None
 
     # Convert valid_pieces to semantic names, merging in the predicted endpoint
     # for each piece so the agent sees name + destination together.
@@ -329,13 +324,13 @@ def format_coaster_state(
     valid_pieces = []
     for piece in valid_piece_ids:
         name = TRACK_TYPES.get(piece, str(piece))
-        entry: dict[str, Any] = {"name": name}
+        entry: dict[str, Any] = {"name": name, "ride_support": "unknown"}
         ep = raw_endpoints.get(str(piece)) or raw_endpoints.get(piece)
         if ep:
             entry["endpoint"] = ep
         valid_pieces.append(entry)
 
-    ride_type = _get_ride_type(ride_id)
+    ride_type = api_payload.get("rideType")
 
     ride_type_name = RIDE_TYPES.get(ride_type, f"Unknown({ride_type})")
 
@@ -348,12 +343,29 @@ def format_coaster_state(
         "current_endpoint": next_endpoint,
         "valid_pieces": valid_pieces,
         "candidate_status": api_payload.get("candidateStatus"),
+        "layout_status": api_payload.get("layoutStatus"),
+        "piece_count": len(history),
         "is_circuit_complete": is_circuit_complete,
         "height_map": height_map,
         "track_elements": track_elements,
     }
 
+    if compact:
+        for key in ("pieces", "height_map", "track_elements"):
+            state_dict.pop(key)
     return (state_dict, coaster_image)
+
+
+def _mutation_state(ride_id: int, outcome: str = "confirmed", error: Optional[str] = None) -> Any:
+    state = get_coaster_state(ride_id)
+    summary = state[0] if isinstance(state, list) else state
+    if not summary.get("success"):
+        summary["state_error"] = summary.get("error")
+    summary["operation_outcome"] = outcome
+    if error is not None:
+        summary["success"] = False
+        summary["error_message"] = error
+    return state
 
 
 @mcp.tool()
@@ -370,7 +382,7 @@ def create_ride(
     All parameters are optional and have reasonable defaults.
 
     ride_type: Numeric ride type ID from the game. 52 = Wooden Roller Coaster
-    (the supported default); see the build-coaster skill for the full table.
+    (the tested default); see the build-coaster skill for other known IDs.
     """
     ride_id: Optional[int] = None
     try:
@@ -400,7 +412,7 @@ def create_ride(
         )
 
         # 3. Get the initial state
-        state = get_coaster_state(ride_id)
+        state = _mutation_state(ride_id)
         mismatch = placement.get("endpointPredictionMismatch")
         if isinstance(mismatch, dict):
             summary = state[0] if isinstance(state, list) else state
@@ -409,11 +421,11 @@ def create_ride(
 
     except APIError as e:
         logger.error(f"API error creating ride: {e}")
-        failure: dict[str, Any] = {"success": False, "error": str(e)}
+        failure: dict[str, Any] = {"success": False, "error": str(e), "operation_outcome": e.outcome}
         if ride_id is not None:
             failure["ride_id"] = ride_id
             failure["message"] = (
-                "Ride was created; station placement outcome may be unknown. "
+                "Ride was created; inspect operation_outcome for the station placement. "
                 "Inspect the ride before retrying or deleting it."
             )
         return failure
@@ -435,7 +447,10 @@ class InvalidTrackType(APIError):
 def _place_track_segment(
     ride_id: int, ride_type: int, segment: TrackSegment, *, query: bool = False
 ) -> dict[str, Any]:
-    state = api_client.get_valid_next_pieces(ride_id)
+    try:
+        state = api_client.get_valid_next_pieces(ride_id)
+    except APIError as e:
+        raise APIError(f"Cannot read construction endpoint: {e}") from e
     if state.get("isCircuitComplete"):
         raise APIError("Circuit is already complete")
     track_id = TRACK_NAME_TO_ID.get(segment.track_type)
@@ -460,7 +475,7 @@ def _place_track_segment(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
 def check_track_segment(
     ride_id: int, track_type: str, brake_speed: int = 0,
     seat_rotation: int = 0, has_chain_lift: bool = False,
@@ -479,7 +494,7 @@ def check_track_segment(
         return {"success": False, "error": str(e)}
 
 
-@mcp.tool()
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
 def get_map_area(x: int, y: int, radius: int = 4) -> dict[str, Any]:
     """Get terrain and map elements within 0–8 tiles of a map centre.
 
@@ -514,12 +529,8 @@ def place_track_segment(
         )
         placement = _place_track_segment(ride_id, _get_ride_type(ride_id), segment)
     except APIError as e:
-        state = get_coaster_state(ride_id)
-        summary = state[0] if isinstance(state, list) else state
-        summary["success"] = False
-        summary["error_message"] = str(e)
-        return summary if isinstance(e, InvalidTrackType) else state
-    state = get_coaster_state(ride_id)
+        return _mutation_state(ride_id, e.outcome, str(e))
+    state = _mutation_state(ride_id)
     mismatch = placement.get("endpointPredictionMismatch")
     if isinstance(mismatch, dict):
         summary = state[0] if isinstance(state, list) else state
@@ -529,7 +540,7 @@ def place_track_segment(
 
 @mcp.tool()
 def place_track_sequence(
-    ride_id: int, segments: list[TrackSegment] = Field(min_length=1)
+    ride_id: int, segments: list[TrackSegment] = Field(min_length=1, max_length=256)
 ) -> Any:
     """Place track pieces in order, stopping at the first failure.
 
@@ -542,6 +553,7 @@ def place_track_sequence(
     placed = 0
     failed_index = None
     error = None
+    outcome = "confirmed"
     mismatches: list[dict[str, Any]] = []
     try:
         ride_type = _get_ride_type(ride_id)
@@ -555,8 +567,11 @@ def place_track_sequence(
         failed_index = None
     except APIError as e:
         error = str(e)
+        outcome = e.outcome
+        if outcome == "confirmed":
+            placed += 1
 
-    result = get_coaster_state(ride_id)
+    result = _mutation_state(ride_id, outcome, error)
     summary = result[0] if isinstance(result, list) else result
     summary["placed_count"] = placed
     if mismatches:
@@ -568,64 +583,47 @@ def place_track_sequence(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations={"destructiveHint": True, "openWorldHint": False})
 def undo_last_piece(ride_id: int) -> Any:
     """
-    Remove the last placed track segment.
+    Remove the terminal track segment of the selected connected layout.
+
+    This is not chronological undo. On a closed circuit it removes the segment
+    immediately before the selected station start. Disconnected layouts are rejected.
     """
     try:
         api_client.delete_last_track_piece(ride_id)
         # Re-fetch the authoritative state: the delete response only contains
         # the next endpoint, not the remaining track history.
-        return get_coaster_state(ride_id)
+        return _mutation_state(ride_id)
     except APIError as e:
-        logger.error(f"API error undoing last piece: {e}")
-        return get_coaster_state(ride_id)
+        return _mutation_state(ride_id, e.outcome, str(e))
 
 
-@mcp.tool()
-def get_coaster_state(ride_id: int) -> Any:
-    """
-    Get the current authoritative state of a coaster ride.
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
+def get_coaster_state(ride_id: int, include_image: bool = True, compact: bool = False) -> Any:
+    """Read one authoritative snapshot of the ride and its construction candidates.
+
+    Set include_image=false to omit rendering. compact=true also omits full
+    history, occupancy elements and the text grid, while retaining piece_count,
+    endpoint, layout status and candidates.
     """
     try:
-        valid_pieces_resp = api_client.get_valid_next_pieces(ride_id)
-        valid_pieces = valid_pieces_resp.get("validPieces", [])
-        valid_piece_endpoints = valid_pieces_resp.get("validPieceEndpoints", {})
-        is_circuit_complete = valid_pieces_resp.get("isCircuitComplete", False)
-        history_resp = api_client.get_track_history(ride_id)
-
-        history = history_resp.get("history", [])
-        next_endpoint = {}
+        payload = api_client.get_coaster_state(ride_id)
+        history = payload.get("history", [])
         if history:
             last = history[-1]
-            next_endpoint = {
-                "x": last["nextX"],
-                "y": last["nextY"],
-                "z": last["nextZ"],
+            payload["nextEndpoint"] = {
+                "x": last["nextX"], "y": last["nextY"], "z": last["nextZ"],
                 "direction": last["nextDirection"],
             }
-        elif valid_pieces_resp.get("position"):
-            pos = valid_pieces_resp["position"]
-            next_endpoint = {
-                "x": pos["x"],
-                "y": pos["y"],
-                "z": pos["z"],
-                "direction": pos["direction"],
-            }
-
-        payload = {
-            "history": history,
-            "nextEndpoint": next_endpoint,
-            "isCircuitComplete": is_circuit_complete,
-            "validPieceEndpoints": valid_piece_endpoints,
-            "candidateStatus": valid_pieces_resp.get("candidateStatus"),
-            "trackElements": history_resp.get("trackElements"),
-        }
-
-        return list(format_coaster_state(ride_id, payload, valid_pieces))
+        else:
+            payload["nextEndpoint"] = payload.get("position", {})
+        summary, image = format_coaster_state(
+            ride_id, payload, payload.get("validPieces", []), include_image=include_image, compact=compact,
+        )
+        return [summary, image] if image is not None else summary
     except APIError as e:
-        logger.error(f"API error getting coaster state: {e}")
         return {"success": False, "ride_id": ride_id, "error": str(e)}
 
 
@@ -636,14 +634,16 @@ def place_entrance_exit(ride_id: int) -> Any:
     """
     try:
         result = api_client.place_entrance_exit(ride_id)
-        state = get_coaster_state(ride_id)
-        # state is a list [dict, Image]
-        if isinstance(state, list) and len(state) > 0:
-            state[0]["entrance_exit"] = result
+        state = _mutation_state(ride_id, "partial" if result.get("warning") else "confirmed")
+        summary = state[0] if isinstance(state, list) else state
+        summary["entrance_exit"] = result
+        if result.get("warning"):
+            summary["success"] = False
+            summary["error_message"] = result["warning"]
         return state
     except APIError as e:
         logger.error(f"API error placing entrance/exit: {e}")
-        return {"success": False, "error": str(e)}
+        return _mutation_state(ride_id, e.outcome, str(e))
 
 
 @mcp.tool()
@@ -653,13 +653,23 @@ def start_ride_test(ride_id: int) -> dict[str, Any]:
     """
     try:
         result = api_client.start_ride_test(ride_id)
-        return {"success": True, "ride_id": ride_id, "message": str(result)}
+        return {"success": True, "ride_id": ride_id, "operation_outcome": "confirmed", "message": str(result)}
     except APIError as e:
         logger.error(f"API error starting ride test: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "operation_outcome": e.outcome, "error": str(e)}
 
 
 @mcp.tool()
+def close_ride(ride_id: int) -> dict[str, Any]:
+    """Close a ride before editing its track or vehicle configuration."""
+    try:
+        result = api_client.close_ride(ride_id)
+        return {"success": True, "ride_id": ride_id, "operation_outcome": "confirmed", "message": str(result)}
+    except APIError as e:
+        return {"success": False, "ride_id": ride_id, "operation_outcome": e.outcome, "error": str(e)}
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
 def get_ride_stats(ride_id: int) -> dict[str, Any]:
     """
     Get ride status, pause state, train velocities, and ratings.
@@ -676,7 +686,7 @@ def get_ride_stats(ride_id: int) -> dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
-@mcp.tool()
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
 def get_track_catalog() -> Any:
     """List the game's track descriptors and which types this server can place.
 
@@ -703,50 +713,51 @@ def set_ride_vehicles(
     count based on station length and track layout. Close the ride first.
     """
     try:
-        return {"success": True, **api_client.set_ride_vehicles(ride_id, setting, value)}
+        return {"success": True, "operation_outcome": "confirmed", **api_client.set_ride_vehicles(ride_id, setting, value)}
     except APIError as e:
         return {"success": False, "ride_id": ride_id, "error": str(e)}
 
 
-@mcp.tool()
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
 def get_plugin_info() -> dict[str, Any]:
-    """Report the loaded plugin version and whether it matches this server.
+    """Diagnose the connection, plugin/protocol compatibility, map and pause state.
 
     Older plugins do not support this endpoint; an error can mean the plugin
     needs updating or the game is unavailable.
     """
     try:
         info = api_client.get_plugin_info()
-        return {"version": info.get("version"), "expected_version": "0.9.0",
-                "matches": info.get("version") == "0.9.0"}
+        return {**info, "version": info.get("version"), "expected_version": "0.10.0",
+                "matches": info.get("version") == "0.10.0",
+                "expected_protocol_version": 1, "protocol_compatible": info.get("protocol_version") == 1}
     except APIError as e:
-        return {"success": False, "error": str(e), "expected_version": "0.9.0"}
+        return {"success": False, "error": str(e), "expected_version": "0.10.0"}
 
 
-@mcp.tool()
+@mcp.tool(annotations={"destructiveHint": True, "openWorldHint": False})
 def delete_ride(ride_id: int) -> dict[str, Any]:
     """Permanently demolish one ride by ID, including its track and vehicles."""
     try:
         api_client.delete_ride(ride_id)
-        return {"success": True, "ride_id": ride_id}
+        return {"success": True, "ride_id": ride_id, "operation_outcome": "confirmed"}
     except APIError as e:
-        return {"success": False, "error": str(e), "ride_id": ride_id}
+        return {"success": False, "operation_outcome": e.outcome, "error": str(e), "ride_id": ride_id}
 
 
-@mcp.tool()
+@mcp.tool(annotations={"destructiveHint": True, "openWorldHint": False})
 def delete_all_rides() -> dict[str, Any]:
     """
     Delete all rides and clear state.
     """
     try:
         result = api_client.delete_all_rides()
-        return {"success": True, "message": str(result)}
+        return {"success": True, "operation_outcome": "confirmed", "message": str(result)}
     except APIError as e:
         logger.error(f"API error deleting rides: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "operation_outcome": e.outcome, "error": str(e)}
 
 
-@mcp.tool()
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
 def list_all_rides() -> Any:
     """
     List all rides. Each ride includes its id, name, numeric type, and a

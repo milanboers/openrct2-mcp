@@ -1,4 +1,4 @@
-var PLUGIN_VERSION = "0.9.0";
+var PLUGIN_VERSION = "0.10.0";
 
 function main() {
     "use strict";
@@ -24,6 +24,12 @@ function main() {
         // Handle incoming data on this connection.
         conn.on("data", function (data) {
             buffer += data;
+            if (buffer.length > 1024 * 1024) {
+                buffer = "";
+                conn.write(JSON.stringify({ success: false, error: "Request exceeds 1 MiB" }) + "\n");
+                conn.end();
+                return;
+            }
             // Split messages on newline; we assume one JSON blob per line.
             var lines = buffer.split("\n");
             // If the last element is not empty, it means the last line is incomplete.
@@ -50,17 +56,20 @@ function main() {
                         return;
                     }
 
-                    processRequest(request, function (response) {
-                        // Send the response as a JSON blob followed by a newline.
-                        conn.write(JSON.stringify(response) + "\n");
-                    });
+                    try {
+                        processRequest(request, function (response) {
+                            conn.write(JSON.stringify(response) + "\n");
+                        });
+                    } catch (e) {
+                        conn.write(JSON.stringify({ success: false, outcome: "unknown", error: "Request failed: " + String(e) }) + "\n");
+                    }
                 })(lines[i]);
             }
         });
     });
 
     // Bind to the selected port
-    server.listen(port);
+    server.listen(port, "127.0.0.1");
     console.log("Ride API server listening on port " + port + ".");
 
     // Only pieces with an existing server-side name and cardinal geometry.
@@ -189,7 +198,7 @@ function main() {
     function getRideTrackState(rideId) {
         var elements = getRideTrackElements(rideId);
         if (elements.length === 0) {
-            return null;
+            return { history: [], isComplete: false, elements: [], layoutStatus: "empty" };
         }
 
         // Start the walk at the BeginStation if there is one, else the first element.
@@ -209,9 +218,11 @@ function main() {
         // Walk backwards to the true start of the track (handles tracks without
         // a BeginStation, e.g. built manually in-game). For a closed circuit this
         // walks a full loop and lands back on the start element.
+        var originalKey = trackPositionKey(iterator.position);
         var backGuard = 0;
         while (backGuard++ < elements.length) {
             if (!iterator.previous()) break;
+            if (trackPositionKey(iterator.position) === originalKey) break;
         }
 
         var startTileX = Math.round(iterator.position.x / 32);
@@ -222,8 +233,16 @@ function main() {
         var history = [];
         var isComplete = false;
         var guard = 0;
+        var visited = {};
+        var traversalStatus = "truncated";
 
-        while (guard++ < 10000) {
+        while (guard++ < elements.length) {
+            var key = trackPositionKey(iterator.position);
+            if (visited[key]) {
+                traversalStatus = "ambiguous";
+                break;
+            }
+            visited[key] = true;
             var pos = iterator.position;
             var seg = iterator.segment;
 
@@ -248,6 +267,7 @@ function main() {
 
             // Advance to the next piece.
             if (!iterator.next()) {
+                traversalStatus = "complete";
                 break; // Open end: the track is not a closed circuit.
             }
 
@@ -257,11 +277,30 @@ function main() {
                 Math.round(iterator.position.z / 8) === startTileZ &&
                 iterator.position.direction === startDirection) {
                 isComplete = true;
+                traversalStatus = "complete";
                 break;
             }
         }
 
-        return { history: history, isComplete: isComplete, elements: elements };
+        // Check every segment origin, not just the component selected above.
+        // Iterators normalise multi-tile segments to the same origin.
+        var disconnected = false;
+        for (var ei = 0; ei < elements.length; ei++) {
+            var elementEntry = elements[ei];
+            if (elementEntry.element.sequence > 0) continue;
+            var elementIterator = map.getTrackIterator(
+                { x: elementEntry.tileX * 32, y: elementEntry.tileY * 32 }, elementEntry.elementIndex);
+            if (!elementIterator || !visited[trackPositionKey(elementIterator.position)]) {
+                disconnected = true;
+                break;
+            }
+        }
+        if (disconnected) traversalStatus = "disconnected";
+        return { history: history, isComplete: isComplete && traversalStatus === "complete", elements: elements, layoutStatus: traversalStatus };
+    }
+
+    function trackPositionKey(position) {
+        return position.x + "," + position.y + "," + position.z + "," + position.direction;
     }
 
     /**
@@ -386,22 +425,13 @@ function main() {
         }
     }
 
-    /**
-     * Map OpenRCT2 numeric error codes to human-readable strings.
-     */
-    function getGameErrorMessage(errorCode) {
-        var code = parseInt(errorCode);
-        switch (code) {
-            case 1: return "Not enough space (Path might be blocked by scenery or another ride)";
-            case 2: return "Path blocked";
-            case 5: return "Requires flat land";
-            case 9: return "Location occupied (You might be trying to build into the ground or another track piece)";
-            case 11: return "Invalid height (Too high above ground or too deep below)";
-            case 12: return "Track piece not available for this ride type";
-            case 13: return "Requires a station";
-            case 21: return "Position too high";
-            default: return "Game Engine Error " + errorCode;
-        }
+    function gameError(result) {
+        if (!result) return "No result from game";
+        var details = [];
+        if (result.errorTitle) details.push(result.errorTitle);
+        if (result.errorMessage) details.push(result.errorMessage);
+        if (!details.length && result.error) details.push(String(result.error));
+        return details.join(": ") || "Unknown game error";
     }
 
     /**
@@ -422,7 +452,14 @@ function main() {
      * @param {Object} request - The parsed JSON request.
      * @param {Function} callback - The function to call with the response.
      */
-    function processRequest(request, callback) {
+    function processRequest(request, callback, snapshot) {
+        if (!request || typeof request !== "object" || Array.isArray(request) ||
+            typeof request.endpoint !== "string" ||
+            (request.params !== undefined && (!request.params || typeof request.params !== "object" || Array.isArray(request.params)))) {
+            callback({ success: false, error: "Invalid request envelope" });
+            return;
+        }
+        request.params = request.params || {};
         if (!request.endpoint) {
             callback({
                 success: false,
@@ -536,7 +573,15 @@ function main() {
                 break;
 
             case "getPluginInfo":
-                callback({ success: true, payload: { version: PLUGIN_VERSION } });
+                callback({ success: true, payload: {
+                    version: PLUGIN_VERSION,
+                    protocol_version: 1,
+                    api_version: context.apiVersion,
+                    map_size: { x: map.size.x, y: map.size.y },
+                    game_paused: context.paused,
+                    park_name: typeof park !== "undefined" ? park.name : null,
+                    capabilities: ["coaster_snapshot", "close_ride", "endpoint_removal", "cardinal_geometry"]
+                } });
                 break;
 
             case "deleteRide":
@@ -567,10 +612,13 @@ function main() {
                     });
                     return;
                 }
+                var failedDeletions = [];
                 function deleteNext() {
                     if (ridesToDelete.length === 0) {
                         callback({
-                            success: true,
+                            success: failedDeletions.length === 0,
+                            outcome: failedDeletions.length ? "partial" : "confirmed",
+                            error: failedDeletions.length ? "Failed to demolish rides: " + failedDeletions.join(", ") : undefined,
                             payload: "Deleted all rides."
                         });
                         return;
@@ -581,6 +629,7 @@ function main() {
                         modifyType: 0  // 0 means demolish.
                     }, function (result) {
                         if (!result || (result.error && result.error !== "")) {
+                            failedDeletions.push(ride.id + " (" + gameError(result) + ")");
                             console.log("Error demolishing ride " + ride.id + ": " + (result && result.error ? result.error : "Unknown error"));
                         }
                         deleteNext();
@@ -589,6 +638,7 @@ function main() {
                 deleteNext();
                 break;
 
+            case "closeRide":
             case "startRideTest":
                 if (!request.params || typeof request.params.rideId !== "number") {
                     callback({
@@ -600,7 +650,7 @@ function main() {
                 var rideId = request.params.rideId;
                 context.executeAction("ridesetstatus", {
                     ride: rideId,
-                    status: 2 // 2 means testing.
+                    status: request.endpoint === "closeRide" ? 0 : 2
                 }, function (result) {
                     if (!result || (result.error && result.error !== "")) {
                         var details = [];
@@ -609,12 +659,13 @@ function main() {
                         if (details.length === 0 && result && result.error) details.push(String(result.error));
                         callback({
                             success: false,
-                            error: "Failed to start ride test: " + (details.length ? details.join(": ") : "Unknown error")
+                            error: "Failed to " + (request.endpoint === "closeRide" ? "close ride" : "start ride test") + ": " +
+                                (details.length ? details.join(": ") : "Unknown error")
                         });
                     } else {
                         callback({
                             success: true,
-                            payload: "Ride " + rideId + " started in test mode."
+                            payload: "Ride " + rideId + (request.endpoint === "closeRide" ? " closed." : " started in test mode.")
                         });
                     }
                 });
@@ -639,7 +690,9 @@ function main() {
                 }
                 // OpenRCT2 uses -1 for an uncalculated excitement rating.
                 var ratingsAvailable = ride.excitement >= 0;
-                var vehicles = ride.vehicles.map(function (id) {
+                var vehicles = ride.vehicles.filter(function (id) {
+                    return typeof id === "number" && id !== 65535 && map.getEntity(id) !== null;
+                }).map(function (id) {
                     var vehicle = map.getEntity(id);
                     var car = vehicle;
                     var cars = 0;
@@ -762,10 +815,11 @@ function main() {
                     if (!result || (result.error && result.error !== "")) {
                         var errMsg = "Failed to place track piece";
                         if (result && result.error) {
-                            errMsg += ": " + getGameErrorMessage(result.error);
+                            errMsg += ": " + gameError(result);
                         }
                         callback({
                             success: false,
+                            outcome: result ? "rejected" : "unknown",
                             error: errMsg
                         });
                     } else {
@@ -780,7 +834,7 @@ function main() {
 
                         var tile = map.getTile(placedTileX, placedTileY);
                         if (!tile) {
-                            callback({ success: false, error: "Tile not found at placed position" });
+                            callback({ success: false, outcome: "confirmed", error: "Tile not found at placed position" });
                             return;
                         }
 
@@ -792,10 +846,13 @@ function main() {
                         console.log("Searching for track element for ride:", targetRide);
                         for (var i = 0; i < tile.numElements; i++) {
                             var elem = tile.elements[i];
-                            if (elem.type === 'track' && elem.ride === targetRide) {
+                            if (elem.type === 'track' && elem.ride === targetRide &&
+                                elem.direction === request.params.direction &&
+                                (elem.trackType === request.params.trackType ||
+                                    (isStationPiece && elem.trackType >= 1 && elem.trackType <= 3))) {
                                 console.log("Found track element at index", i, "with baseZ:", elem.baseZ, "vs placedZ:", placedTileZ);
                                 // Check if this element is at the right height (with some tolerance)
-                                if (Math.abs(elem.baseZ - placedTileZ) <= 8) {
+                                if (elem.baseZ === pixelCoordinateZ) {
                                     elem_index = i;
                                     trackElement = elem;
                                     break;
@@ -820,8 +877,11 @@ function main() {
                                 if (searchTile) {
                                     for (var k = 0; k < searchTile.numElements; k++) {
                                         var searchElem = searchTile.elements[k];
-                                        if (searchElem.type === 'track' && searchElem.ride === targetRide) {
-                                            if (Math.abs(searchElem.baseZ - placedTileZ) <= 16) {
+                                        if (searchElem.type === 'track' && searchElem.ride === targetRide &&
+                                            searchElem.direction === request.params.direction &&
+                                            (searchElem.trackType === request.params.trackType ||
+                                                (isStationPiece && searchElem.trackType >= 1 && searchElem.trackType <= 3))) {
+                                            if (searchElem.baseZ === pixelCoordinateZ) {
                                                 console.log("Found track on neighboring tile at offset", searchOffsets[j], "tile:", searchX, searchY);
                                                 placedTileX = searchX;
                                                 placedTileY = searchY;
@@ -837,7 +897,7 @@ function main() {
                             }
 
                             if (elem_index === -1) {
-                                callback({ success: false, error: "Could not find track element on any nearby tile" });
+                                callback({ success: false, outcome: "confirmed", error: "Could not find track element on any nearby tile" });
                                 return;
                             }
                         }
@@ -851,7 +911,7 @@ function main() {
 
                         if (!iterator) {
                             console.log("ERROR: Could not create track iterator at position:", iteratorPos, "index:", elem_index);
-                            callback({ success: false, error: "Track iterator not available" });
+                            callback({ success: false, outcome: "confirmed", error: "Track iterator not available" });
                             return;
                         }
 
@@ -869,11 +929,11 @@ function main() {
                                 if (advanced && iterator.nextPosition) {
                                     console.log("Advanced iterator, now have nextPosition:", iterator.nextPosition);
                                 } else {
-                                    callback({ success: false, error: "Track has no valid next position" });
+                                    callback({ success: false, outcome: "confirmed", error: "Track has no valid next position" });
                                     return;
                                 }
                             } else {
-                                callback({ success: false, error: "Track has no next position available" });
+                                callback({ success: false, outcome: "confirmed", error: "Track has no next position available" });
                                 return;
                             }
                         }
@@ -953,6 +1013,32 @@ function main() {
                 });
                 break;
 
+            case "getCoasterState":
+                var snapshotRide = null;
+                map.rides.forEach(function (r) { if (r.id === request.params.rideId) snapshotRide = r; });
+                if (!snapshotRide) {
+                    callback({ success: false, error: "Ride " + request.params.rideId + " not found" });
+                    return;
+                }
+                var snapshotState = getRideTrackState(request.params.rideId);
+                if (!snapshotState) {
+                    callback({ success: false, error: "Could not reconstruct ride track" });
+                    return;
+                }
+                processRequest({ endpoint: "getValidNextPieces", params: request.params }, function (candidates) {
+                    if (!candidates.success) { callback(candidates); return; }
+                    processRequest({ endpoint: "getTrackHistory", params: request.params }, function (historyResult) {
+                        if (!historyResult.success) { callback(historyResult); return; }
+                        var payload = candidates.payload;
+                        payload.history = historyResult.payload.history;
+                        payload.trackElements = historyResult.payload.trackElements;
+                        payload.rideType = snapshotRide.type;
+                        payload.layoutStatus = snapshotState ? snapshotState.layoutStatus : "empty";
+                        callback({ success: true, payload: payload });
+                    }, snapshotState);
+                }, snapshotState);
+                break;
+
             case "getValidNextPieces":
                 if (!request.params || typeof request.params.rideId !== "number") {
                     callback({
@@ -963,7 +1049,7 @@ function main() {
                 }
 
                 var rideId = request.params.rideId;
-                var state = getRideTrackState(rideId);
+                var state = snapshot !== undefined ? snapshot : getRideTrackState(rideId);
 
                 if (!state || state.history.length === 0) {
                     // No track placed yet - allow only station and flat pieces to start
@@ -995,7 +1081,9 @@ function main() {
                 var isStation = lastPiece.trackType === 1 || lastPiece.trackType === 2 || lastPiece.trackType === 3;
                 var validPieces = [];
                 var candidateStatus = "available";
-                if (state.isComplete) {
+                if (state.layoutStatus !== "complete") {
+                    candidateStatus = "unsupported_" + state.layoutStatus + "_layout";
+                } else if (state.isComplete) {
                     candidateStatus = "circuit_complete";
                 } else if (hasInverted) {
                     candidateStatus = "unsupported_inverted_track";
@@ -1264,7 +1352,11 @@ function main() {
                     return;
                 }
 
-                // The last piece in the walk is the one most recently placed.
+                if (state.layoutStatus !== "complete") {
+                    callback({ success: false, error: "Cannot remove endpoint from " + state.layoutStatus + " layout" });
+                    return;
+                }
+                // Remove the selected component's terminal piece, not chronological undo.
                 var lastPiece = state.history[state.history.length - 1];
 
                 // Find the actual tile element so we can remove it by its exact baseZ
@@ -1276,12 +1368,20 @@ function main() {
                     if (cand.tileX === lastPiece.x &&
                         cand.tileY === lastPiece.y &&
                         cand.element.trackType === lastPiece.trackType &&
-                        cand.element.direction === lastPiece.direction) {
+                        cand.element.direction === lastPiece.direction &&
+                        !(cand.element.sequence > 0)) {
+                        var removalIterator = map.getTrackIterator(
+                            { x: cand.tileX * 32, y: cand.tileY * 32 }, cand.elementIndex);
+                        if (!removalIterator || removalIterator.position.z !== lastPiece.pixelZ) continue;
                         removeElement = cand.element;
                         break;
                     }
                 }
-                var removeZ = removeElement ? removeElement.baseZ : lastPiece.pixelZ;
+                if (!removeElement) {
+                    callback({ success: false, error: "Could not identify exact endpoint element for removal" });
+                    return;
+                }
+                var removeZ = removeElement.baseZ;
 
                 console.log("Attempting to remove track piece at tile:", lastPiece.x, lastPiece.y,
                             "trackType:", lastPiece.trackType, "z:", removeZ);
@@ -1299,7 +1399,8 @@ function main() {
                         console.log("Failed to remove track piece:", result ? result.error : "Unknown error");
                         callback({
                             success: false,
-                            error: "Failed to remove track piece: " + (result && result.error ? result.error : "Unknown error")
+                            outcome: result ? "rejected" : "unknown",
+                            error: "Failed to remove track piece: " + gameError(result)
                         });
                     } else {
                         console.log("Successfully removed track piece");
@@ -1387,8 +1488,8 @@ function main() {
                 break;
 
             case "getTrackHistory":
-                var state = getRideTrackState(request.params.rideId);
-                if (!state && getRideTrackElements(request.params.rideId).length > 0) {
+                var state = snapshot !== undefined ? snapshot : getRideTrackState(request.params.rideId);
+                if (!state) {
                     callback({ success: false, error: "Could not reconstruct ride track" });
                     return;
                 }

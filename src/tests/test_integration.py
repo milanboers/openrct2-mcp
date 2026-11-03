@@ -104,15 +104,13 @@ class _PluginBridge:
 @pytest.fixture
 def plugin_server():
     bridge = _PluginBridge()
-    old_host = mcp_server.api_client.host
-    old_port = mcp_server.api_client.port
-    mcp_server.api_client.host = "127.0.0.1"
-    mcp_server.api_client.port = bridge.port
+    old_client = mcp_server.api_client
+    mcp_server.api_client = mcp_server.OpenRCT2API(host="127.0.0.1", port=bridge.port)
     try:
         yield bridge.port
     finally:
-        mcp_server.api_client.host = old_host
-        mcp_server.api_client.port = old_port
+        mcp_server.api_client._close_connection()
+        mcp_server.api_client = old_client
         bridge.close()
 
 
@@ -137,9 +135,9 @@ def test_full_build_flow(plugin_server) -> None:
 
     # 2. An unknown piece is rejected.
     result = mcp_server.place_track_segment(1, "Banana")
-    assert isinstance(result, dict)
-    assert result["success"] is False
-    assert "Invalid track type" in result["error_message"]
+    assert result[0]["success"] is False
+    assert result[0]["operation_outcome"] == "rejected"
+    assert "Invalid track type" in result[0]["error_message"]
 
     # 3. Build a 4-piece station (the game keeps reclassifying as we extend it).
     for _ in range(2):
@@ -182,3 +180,33 @@ def test_full_build_flow(plugin_server) -> None:
     result = mcp_server.delete_all_rides()
     assert result["success"] is True
     assert mcp_server.list_all_rides() == []
+
+@pytest.mark.skipif(not _has_node, reason="node is required for integration tests")
+def test_mcp_serialization_and_revision_flow(plugin_server):
+    import asyncio
+    import json
+    from fastmcp import Client
+
+    async def run():
+        async with Client(mcp_server.mcp) as client:
+            async def call(tool_name, **arguments):
+                result = await client.call_tool(tool_name, arguments)
+                assert not result.is_error
+                return json.loads(next(block.text for block in result.content if block.type == 'text'))
+
+            tools = {tool.name: tool for tool in await client.list_tools()}
+            assert tools['get_coaster_state'].annotations.read_only_hint is True
+            assert tools['delete_ride'].annotations.destructive_hint is True
+            created = await call('create_ride', name='MCP contract')
+            assert created['operation_outcome'] == 'confirmed'
+            ride_id = created['ride_id']
+            state = await call('get_coaster_state', ride_id=ride_id, include_image=False, compact=True)
+            assert state['piece_count'] == 1
+            assert state['layout_status'] == 'complete'
+            assert 'pieces' not in state
+            assert (await call('start_ride_test', ride_id=ride_id))['success']
+            assert (await call('close_ride', ride_id=ride_id))['operation_outcome'] == 'confirmed'
+            assert (await call('undo_last_piece', ride_id=ride_id))['piece_count'] == 0
+            assert (await call('delete_ride', ride_id=ride_id))['operation_outcome'] == 'confirmed'
+
+    asyncio.run(run())

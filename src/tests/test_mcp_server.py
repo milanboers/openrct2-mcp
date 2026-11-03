@@ -29,6 +29,12 @@ from mcp_server import (
 )
 
 
+@pytest.fixture(autouse=True)
+def no_game_connection():
+    with patch.object(api_client, '_send_request', side_effect=AssertionError('Unit test attempted game connection')):
+        yield
+
+
 def test_height_map_uses_element_tiles_and_preserves_crossing_heights() -> None:
     elements = [{'x': 10, 'y': 11, 'z': 14}, {'x': 10, 'y': 11, 'z': 18},
                 {'x': 12, 'y': 11, 'z': 15.5}]
@@ -74,6 +80,7 @@ class TestCreateRide:
         with patch.object(api_client, 'create_ride') as mock_create, \
              patch.object(api_client, 'place_track_piece') as mock_place, \
              patch.object(api_client, 'get_valid_next_pieces') as mock_valid, \
+             patch.object(api_client, 'get_coaster_state') as mock_snapshot, \
              patch.object(api_client, 'get_track_history') as mock_hist, \
              patch.object(api_client, 'list_all_rides') as mock_list:
 
@@ -85,6 +92,7 @@ class TestCreateRide:
             }
             mock_list.return_value = [{"id": 1, "type": 52}]
 
+            mock_snapshot.return_value = {**mock_valid.return_value, **mock_hist.return_value, 'rideType': 52}
             result: Any = create_ride(name="Test Coaster")
 
             assert isinstance(result, list)
@@ -120,7 +128,8 @@ class TestCreateRide:
         assert result['success'] is False
         assert result['ride_id'] == 7
         assert result['error'] == 'Location occupied'
-        assert 'outcome may be unknown' in result['message']
+        assert result['operation_outcome'] == 'rejected'
+        assert 'Ride was created' in result['message']
 
 
 class TestPlaceTrackSegment:
@@ -130,6 +139,7 @@ class TestPlaceTrackSegment:
         """Test successful track segment placement."""
         # Use patch.object on api_client since we import it from mcp_server
         with patch.object(api_client, 'get_valid_next_pieces') as mock_valid_next, \
+             patch.object(api_client, 'get_coaster_state') as mock_snapshot, \
              patch.object(api_client, 'get_track_history') as mock_hist, \
              patch.object(api_client, 'place_track_piece') as mock_place, \
              patch.object(api_client, 'list_all_rides') as mock_list:
@@ -150,6 +160,7 @@ class TestPlaceTrackSegment:
             }
 
             # 3. Call the tool
+            mock_snapshot.return_value = {**mock_valid_next.return_value, **mock_hist.return_value, 'rideType': 52}
             result: Any = place_track_segment(
                 ride_id=1,
                 track_type="Flat"
@@ -219,7 +230,7 @@ class TestPlaceTrackSequence:
 
             result = place_track_sequence(1, segments)
 
-            assert result == [{'success': True, 'placed_count': 2}, 'image']
+            assert result == [{'success': True, 'operation_outcome': 'confirmed', 'placed_count': 2}, 'image']
             assert place.call_count == 2
             assert place.call_args_list[1].kwargs['tile_coordinate_x'] == 9
             assert place.call_args_list[1].kwargs['has_chain_lift'] is True
@@ -280,6 +291,7 @@ class TestUndoLastPiece:
         """Test successful undo."""
         with patch.object(api_client, 'delete_last_track_piece') as mock_delete, \
              patch.object(api_client, 'get_valid_next_pieces') as mock_valid, \
+             patch.object(api_client, 'get_coaster_state') as mock_snapshot, \
              patch.object(api_client, 'get_track_history') as mock_hist, \
              patch.object(api_client, 'list_all_rides') as mock_list:
 
@@ -290,6 +302,7 @@ class TestUndoLastPiece:
             }
             mock_list.return_value = [{"id": 1, "type": 52}]
 
+            mock_snapshot.return_value = {**mock_valid.return_value, **mock_hist.return_value, 'rideType': 52}
             result: Any = undo_last_piece(ride_id=1)
 
             assert isinstance(result, list)
@@ -304,6 +317,7 @@ class TestCoasterTools:
 
     def test_place_entrance_exit(self) -> None:
         with patch.object(api_client, 'place_entrance_exit') as mock_place, \
+             patch.object(api_client, 'get_coaster_state') as mock_snapshot, \
              patch.object(api_client, 'get_track_history') as mock_hist, \
              patch.object(api_client, 'get_valid_next_pieces') as mock_valid, \
              patch.object(api_client, 'list_all_rides') as mock_list:
@@ -313,6 +327,7 @@ class TestCoasterTools:
             mock_valid.return_value = {"validPieces": []}
             mock_list.return_value = [{"id": 1, "type": 52}]
 
+            mock_snapshot.return_value = {**mock_valid.return_value, **mock_hist.return_value, 'rideType': 52}
             result: Any = place_entrance_exit(ride_id=1)
             assert isinstance(result, list)
             assert result[0]["success"] is True
@@ -362,18 +377,19 @@ class TestCoasterTools:
             'ride_id': 1, 'setting': 'trains', 'value': 2,
         }) as set_vehicles:
             assert set_ride_vehicles(1, 'trains', 2) == {
-                'success': True, 'ride_id': 1, 'setting': 'trains', 'value': 2,
+                'success': True, 'operation_outcome': 'confirmed', 'ride_id': 1, 'setting': 'trains', 'value': 2,
             }
             set_vehicles.assert_called_once_with(1, 'trains', 2)
 
     def test_delete_ride(self) -> None:
         with patch.object(api_client, 'delete_ride', return_value={'rideId': 1}) as delete:
-            assert delete_ride(1) == {'success': True, 'ride_id': 1}
+            assert delete_ride(1) == {'success': True, 'ride_id': 1, 'operation_outcome': 'confirmed'}
             delete.assert_called_once_with(1)
 
     def test_get_plugin_info(self) -> None:
-        with patch.object(api_client, 'get_plugin_info', return_value={'version': '0.9.0'}):
-            assert get_plugin_info() == {'version': '0.9.0', 'expected_version': '0.9.0', 'matches': True}
+        with patch.object(api_client, 'get_plugin_info', return_value={'version': '0.10.0', 'protocol_version': 1}):
+            assert get_plugin_info() == {'version': '0.10.0', 'expected_version': '0.10.0', 'matches': True,
+                                         'protocol_version': 1, 'expected_protocol_version': 1, 'protocol_compatible': True}
 
     def test_list_rides_failure_is_not_empty_list(self) -> None:
         from api_client import APIError
@@ -400,10 +416,9 @@ class TestCoasterTools:
             assert result[0]["ride_type_name"] == "Wooden Roller Coaster"
 
     def test_candidate_status_reported_from_plugin(self) -> None:
-        with patch.object(api_client, 'get_valid_next_pieces', return_value={
-            'validPieces': [], 'candidateStatus': 'unsupported_diagonal_endpoint',
-        }), patch.object(api_client, 'get_track_history', return_value={'history': []}), \
-             patch.object(api_client, 'list_all_rides', return_value=[{'id': 1, 'type': 52}]):
+        with patch.object(api_client, 'get_coaster_state', return_value={
+            'validPieces': [], 'candidateStatus': 'unsupported_diagonal_endpoint', 'history': [], 'rideType': 52,
+        }):
             result = get_coaster_state(1)
 
         assert result[0]['valid_pieces'] == []
@@ -412,6 +427,7 @@ class TestCoasterTools:
     def test_circuit_complete_reported_from_plugin(self) -> None:
         """The plugin's isCircuitComplete flag must flow through to the state."""
         with patch.object(api_client, 'get_valid_next_pieces') as mock_valid, \
+             patch.object(api_client, 'get_coaster_state') as mock_snapshot, \
              patch.object(api_client, 'get_track_history') as mock_hist, \
              patch.object(api_client, 'list_all_rides') as mock_list:
 
@@ -421,6 +437,99 @@ class TestCoasterTools:
             }
             mock_list.return_value = [{"id": 1, "type": 52}]
 
+            mock_snapshot.return_value = {**mock_valid.return_value, **mock_hist.return_value, 'rideType': 52}
             result: Any = get_coaster_state(ride_id=1)
             assert isinstance(result, list)
             assert result[0]["is_circuit_complete"] is True
+
+
+def test_missing_ride_type_prevents_placement():
+    with patch.object(api_client, 'list_all_rides', return_value=[]), \
+         patch.object(api_client, 'place_track_piece') as place, \
+         patch('mcp_server.get_coaster_state', return_value={'success': False, 'error': 'Ride not found'}):
+        result = place_track_segment(7, 'Flat')
+
+    assert result['success'] is False
+    assert result['operation_outcome'] == 'rejected'
+    assert result['error_message'] == 'Ride 7 not found'
+    place.assert_not_called()
+
+
+def test_undo_failure_is_not_reported_as_success():
+    from api_client import APIError
+
+    with patch.object(api_client, 'delete_last_track_piece', side_effect=APIError('Ride must be closed')), \
+         patch('mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']):
+        result = undo_last_piece(7)
+
+    assert result[0]['success'] is False
+    assert result[0]['operation_outcome'] == 'rejected'
+    assert result[0]['error_message'] == 'Ride must be closed'
+
+
+def test_confirmed_placement_with_failed_state_read_retains_outcome():
+    with patch('mcp_server._place_track_segment', return_value={}), \
+         patch('mcp_server._get_ride_type', return_value=52), \
+         patch('mcp_server.get_coaster_state', return_value={'success': False, 'error': 'Disconnected'}):
+        result = place_track_segment(7, 'Flat')
+
+    assert result['success'] is False
+    assert result['operation_outcome'] == 'confirmed'
+    assert result['state_error'] == 'Disconnected'
+
+
+def test_compact_snapshot_uses_one_request_and_skips_rendering():
+    with patch.object(api_client, 'get_coaster_state', return_value={
+        'history': [], 'rideType': 51, 'validPieces': [], 'layoutStatus': 'empty',
+    }) as snapshot, patch('mcp_server.generate_coaster_image') as render:
+        result = get_coaster_state(7, include_image=False, compact=True)
+
+    assert result['success'] is True
+    assert result['ride_type'] == 51
+    assert result['piece_count'] == 0
+    assert result['layout_status'] == 'empty'
+    assert not {'pieces', 'height_map', 'track_elements'} & result.keys()
+    snapshot.assert_called_once_with(7)
+    render.assert_not_called()
+
+
+def test_large_visualizations_are_bounded():
+    from io import BytesIO
+    from PIL import Image
+
+    pieces = [
+        {'x': x, 'y': y, 'z': 14, 'direction': 0, 'trackType': 0}
+        for x, y in [(1, 1), (4095, 4095)]
+    ]
+    image = Image.open(BytesIO(generate_coaster_image(pieces, {}).data))
+    elements = [{'x': p['x'], 'y': p['y'], 'z': p['z']} for p in pieces]
+
+    assert max(image.size) <= 1600
+    assert 'omitted' in generate_height_map(elements)
+
+
+@pytest.mark.parametrize(('outcome', 'placed_count'), [('rejected', 0), ('unknown', 0), ('confirmed', 1)])
+def test_sequence_distinguishes_rejection_transport_failure_and_post_placement_failure(outcome, placed_count):
+    from api_client import APIError
+
+    with patch('mcp_server._get_ride_type', return_value=52), \
+         patch('mcp_server._place_track_segment', side_effect=APIError('Placement diagnostics failed', outcome=outcome)), \
+         patch('mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']):
+        result = place_track_sequence(7, [TrackSegment(track_type='Flat')])
+
+    assert result[0]['success'] is False
+    assert result[0]['operation_outcome'] == outcome
+    assert result[0]['placed_count'] == placed_count
+    assert result[0]['failed_index'] == 0
+
+
+def test_partial_entrance_placement_is_not_reported_as_complete():
+    with patch.object(api_client, 'place_entrance_exit', return_value={
+        'entrance': {'x': 10}, 'exit': None, 'warning': 'Could not place exit',
+    }), patch('mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']):
+        result = place_entrance_exit(7)
+
+    assert result[0]['success'] is False
+    assert result[0]['operation_outcome'] == 'partial'
+    assert result[0]['entrance_exit']['exit'] is None
+    assert result[0]['error_message'] == 'Could not place exit'

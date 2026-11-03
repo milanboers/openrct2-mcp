@@ -13,7 +13,9 @@ logger = logging.getLogger(__name__)
 class APIError(Exception):
     """Exception raised when API request fails."""
 
-    pass
+    def __init__(self, message: str, *, outcome: str = "rejected"):
+        super().__init__(message)
+        self.outcome = outcome
 
 
 class OpenRCT2API:
@@ -41,7 +43,7 @@ class OpenRCT2API:
             self._sock.settimeout(timeout)
             self._sock.connect((self.host, self.port))
             # makefile returns a file-like object for the socket
-            self._file_obj = self._sock.makefile("r")  # type: ignore
+            self._file_obj = self._sock.makefile("r", encoding="utf-8")  # type: ignore
             return self._sock
         except socket.error as e:
             self._close_connection()
@@ -79,23 +81,30 @@ class OpenRCT2API:
                 if self._file_obj is None:
                     raise APIError("Connection not established")
 
-                response_line = self._file_obj.readline()
+                response_line = self._file_obj.readline(16 * 1024 * 1024 + 1)
                 if not response_line:
                     self._close_connection()
-                    raise APIError("Empty response (connection closed by server)")
+                    raise APIError("Empty response (connection closed by server)", outcome="unknown")
 
+                if len(response_line) > 16 * 1024 * 1024:
+                    self._close_connection()
+                    raise APIError("API response exceeds 16 MiB", outcome="unknown")
                 result = json.loads(response_line)
+                if not isinstance(result, dict) or not isinstance(result.get("success"), bool):
+                    self._close_connection()
+                    raise APIError("Invalid API response envelope", outcome="unknown")
                 if not result.get("success", False):
-                    raise APIError(result.get("error", "Unknown API error"))
+                    raise APIError(result.get("error", "Unknown API error"), outcome=result.get("outcome", "rejected"))
 
                 payload = result.get("payload", {})
                 return payload
 
             except (socket.timeout, socket.error) as e:
                 self._close_connection()
-                raise APIError(f"API communication error: {e}")
-            except json.JSONDecodeError as e:
-                raise APIError(f"Failed to decode API response: {e}")
+                raise APIError(f"API communication error: {e}", outcome="unknown")
+            except (json.JSONDecodeError, UnicodeError) as e:
+                self._close_connection()
+                raise APIError(f"Failed to decode API response: {e}", outcome="unknown")
 
     def create_ride(
         self,
@@ -125,7 +134,7 @@ class OpenRCT2API:
 
         result = self._send_request("createRide", params)
         if not isinstance(result, dict):
-            raise APIError("Unexpected response format from createRide")
+            raise APIError("Unexpected response format from createRide", outcome="unknown")
         return result
 
     def place_track_piece(
@@ -165,28 +174,37 @@ class OpenRCT2API:
 
         result = self._send_request("queryTrackPiece" if query else "placeTrackPiece", params)
         if not isinstance(result, dict):
-            raise APIError("Unexpected response format from placeTrackPiece")
+            raise APIError("Unexpected response format from placeTrackPiece", outcome="unknown")
         return result
+
+    def get_coaster_state(self, ride_id: int) -> dict[str, Any]:
+        result = self._send_request("getCoasterState", {"rideId": ride_id})
+        if not isinstance(result, dict):
+            raise APIError("Unexpected response format from getCoasterState", outcome="unknown")
+        return result
+
+    def close_ride(self, ride_id: int) -> Any:
+        return self._send_request("closeRide", {"rideId": ride_id})
 
     def get_valid_next_pieces(self, ride_id: int) -> dict[str, Any]:
         """Get valid next track pieces."""
         result = self._send_request("getValidNextPieces", {"rideId": ride_id})
         if not isinstance(result, dict):
-            raise APIError("Unexpected response format from getValidNextPieces")
+            raise APIError("Unexpected response format from getValidNextPieces", outcome="unknown")
         return result
 
     def get_track_history(self, ride_id: int) -> dict[str, Any]:
         """Get the full track history."""
         result = self._send_request("getTrackHistory", {"rideId": ride_id})
         if not isinstance(result, dict):
-            raise APIError("Unexpected response format from getTrackHistory")
+            raise APIError("Unexpected response format from getTrackHistory", outcome="unknown")
         return result
 
     def list_all_rides(self) -> list[dict[str, Any]]:
         """List all rides."""
         result = self._send_request("listAllRides")
         if not isinstance(result, list):
-            raise APIError("Unexpected response format from listAllRides")
+            raise APIError("Unexpected response format from listAllRides", outcome="unknown")
         # Ensure elements are dicts
         return [item for item in result if isinstance(item, dict)]
 
@@ -194,14 +212,14 @@ class OpenRCT2API:
         """Delete the last placed track piece."""
         result = self._send_request("deleteLastTrackPiece", {"rideId": ride_id})
         if not isinstance(result, dict):
-            raise APIError("Unexpected response format from deleteLastTrackPiece")
+            raise APIError("Unexpected response format from deleteLastTrackPiece", outcome="unknown")
         return result
 
     def place_entrance_exit(self, ride_id: int) -> dict[str, Any]:
         """Place entrance and exit for a ride's station."""
         result = self._send_request("placeEntranceExit", {"rideId": ride_id})
         if not isinstance(result, dict):
-            raise APIError("Unexpected response format from placeEntranceExit")
+            raise APIError("Unexpected response format from placeEntranceExit", outcome="unknown")
         return result
 
     def start_ride_test(self, ride_id: int) -> Any:
@@ -212,37 +230,37 @@ class OpenRCT2API:
         """Get ride statistics."""
         result = self._send_request("getRideStats", {"rideId": ride_id})
         if not isinstance(result, dict):
-            raise APIError("Unexpected response format from getRideStats")
+            raise APIError("Unexpected response format from getRideStats", outcome="unknown")
         return result
 
     def get_track_catalog(self) -> list[dict[str, Any]]:
         result = self._send_request("getAllTrackSegments")
         if not isinstance(result, list):
-            raise APIError("Unexpected response format from getAllTrackSegments")
+            raise APIError("Unexpected response format from getAllTrackSegments", outcome="unknown")
         return result
 
     def set_ride_vehicles(self, ride_id: int, setting: str, value: int) -> dict[str, Any]:
         result = self._send_request("setRideVehicles", {"rideId": ride_id, "setting": setting, "value": value})
         if not isinstance(result, dict):
-            raise APIError("Unexpected response format from setRideVehicles")
+            raise APIError("Unexpected response format from setRideVehicles", outcome="unknown")
         return result
 
     def get_map_area(self, x: int, y: int, radius: int) -> dict[str, Any]:
         result = self._send_request("getMapArea", {"x": x, "y": y, "radius": radius})
         if not isinstance(result, dict):
-            raise APIError("Unexpected response format from getMapArea")
+            raise APIError("Unexpected response format from getMapArea", outcome="unknown")
         return result
 
     def get_plugin_info(self) -> dict[str, Any]:
         result = self._send_request("getPluginInfo")
         if not isinstance(result, dict):
-            raise APIError("Unexpected response format from getPluginInfo")
+            raise APIError("Unexpected response format from getPluginInfo", outcome="unknown")
         return result
 
     def delete_ride(self, ride_id: int) -> dict[str, Any]:
         result = self._send_request("deleteRide", {"rideId": ride_id})
         if not isinstance(result, dict):
-            raise APIError("Unexpected response format from deleteRide")
+            raise APIError("Unexpected response format from deleteRide", outcome="unknown")
         return result
 
     def delete_all_rides(self) -> Any:
