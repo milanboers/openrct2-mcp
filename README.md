@@ -15,12 +15,12 @@ Three pieces talk to each other:
 ## Tools
 
 - `create_ride`: Create a new coaster and place the first station piece.
-- `place_track_segment`: Add a track segment. `valid_pieces` lists supported cardinal types whose connection shape matches; it does not guarantee ride support or clearance. Diagonal and inverted track are not supported by this filter.
+- `place_track_segment`: Add a track segment. `valid_pieces` lists supported cardinal types whose connection shape matches; it does not guarantee ride support or clearance. Diagonal and inverted track are not supported by this filter. Placement responses include `endpoint_prediction_mismatches` if the predicted and actual endpoints differ.
 - `check_track_segment`: Ask the game whether a piece can be placed at the current endpoint without building it. The result is not a reservation or a guarantee of ride support or connectivity.
 - `get_map_area`: Inspect nearby terrain and map elements within a bounded radius.
 - `place_track_sequence`: Place several segments in order, returning one final state and image. Stops at the first failure; earlier segments remain placed, and the failed segment may also have been placed. Inspect the final state before retrying. Each segment accepts `track_type`, `has_chain_lift`, `brake_speed`, and `seat_rotation`.
 - `undo_last_piece`: Remove the last placed segment.
-- `get_coaster_state`: Get track history, actual track-element tiles and base heights, and a visualization. The footprint is not collision-clearance data; the image's connecting lines are approximate.
+- `get_coaster_state`: Get track history, actual track-element tiles and base heights, and a visualization. `candidate_status` explains when candidate generation is unavailable or the circuit is complete. The footprint is not collision-clearance data; the image's connecting lines are approximate.
 - `place_entrance_exit`: Add entrance/exit to the station.
 - `start_ride_test`: Start test mode for ratings.
 - `get_ride_stats`: Get test status, pause state, instantiated trains and car counts, ratings, speed, length, duration, G-forces, and drops. Closed rides may have no instantiated trains. Ratings use the game's decimal scale (e.g. 6.52) and are `null` until calculated; vehicle velocities are raw game values.

@@ -16,8 +16,9 @@ spec.loader.exec_module(smoke_test)
 
 
 class FakeClient:
-    def __init__(self, rides=None):
+    def __init__(self, rides=None, mismatches=None):
         self.rides = rides or []
+        self.mismatches = mismatches or []
         self.calls = []
 
     async def __aenter__(self):
@@ -31,7 +32,8 @@ class FakeClient:
         responses = {
             "list_all_rides": self.rides,
             "create_ride": {"success": True, "ride_id": 7},
-            "place_track_sequence": {"success": True, "is_circuit_complete": True, "placed_count": 41},
+            "place_track_sequence": {"success": True, "is_circuit_complete": True, "placed_count": 41,
+                                     "endpoint_prediction_mismatches": self.mismatches},
             "place_entrance_exit": {"success": True},
             "start_ride_test": {"success": True},
             "get_ride_stats": {"ratings_available": True, "vehicles": [{"velocity": 100}]},
@@ -54,6 +56,15 @@ def test_smoke_test_builds_and_tests_a_coaster(capsys):
     assert len(segments) == 41
     assert segments[2] == {"track_type": "FlatToUp25", "has_chain_lift": True}
     assert "Smoke test passed" in capsys.readouterr().out
+
+
+def test_smoke_test_fails_on_endpoint_mismatch():
+    client = FakeClient(mismatches=[{"segment_index": 3, "predicted": {"x": 1}, "actual": {"x": 2}}])
+    with patch.object(smoke_test, "Client", return_value=client):
+        with pytest.raises(RuntimeError, match="Endpoint prediction mismatches"):
+            asyncio.run(smoke_test.run(10))
+
+    assert [name for name, _ in client.calls] == ['list_all_rides', 'create_ride', 'place_track_sequence']
 
 
 def test_smoke_test_refuses_park_with_rides():

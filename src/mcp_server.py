@@ -347,6 +347,7 @@ def format_coaster_state(
         "pieces": formatted_pieces,
         "current_endpoint": next_endpoint,
         "valid_pieces": valid_pieces,
+        "candidate_status": api_payload.get("candidateStatus"),
         "is_circuit_complete": is_circuit_complete,
         "height_map": height_map,
         "track_elements": track_elements,
@@ -388,7 +389,7 @@ def create_ride(
         ride_id = int(result["rideId"])
 
         # 2. Place the first station piece
-        api_client.place_track_piece(
+        placement = api_client.place_track_piece(
             ride_id=ride_id,
             tile_coordinate_x=station_x,
             tile_coordinate_y=station_y,
@@ -399,7 +400,12 @@ def create_ride(
         )
 
         # 3. Get the initial state
-        return get_coaster_state(ride_id)
+        state = get_coaster_state(ride_id)
+        mismatch = placement.get("endpointPredictionMismatch")
+        if isinstance(mismatch, dict):
+            summary = state[0] if isinstance(state, list) else state
+            summary["endpoint_prediction_mismatches"] = [{"segment_index": 0, **mismatch}]
+        return state
 
     except APIError as e:
         logger.error(f"API error creating ride: {e}")
@@ -506,14 +512,19 @@ def place_track_segment(
             seat_rotation=seat_rotation,
             has_chain_lift=has_chain_lift,
         )
-        _place_track_segment(ride_id, _get_ride_type(ride_id), segment)
+        placement = _place_track_segment(ride_id, _get_ride_type(ride_id), segment)
     except APIError as e:
         state = get_coaster_state(ride_id)
         summary = state[0] if isinstance(state, list) else state
         summary["success"] = False
         summary["error_message"] = str(e)
         return summary if isinstance(e, InvalidTrackType) else state
-    return get_coaster_state(ride_id)
+    state = get_coaster_state(ride_id)
+    mismatch = placement.get("endpointPredictionMismatch")
+    if isinstance(mismatch, dict):
+        summary = state[0] if isinstance(state, list) else state
+        summary["endpoint_prediction_mismatches"] = [{"segment_index": 0, **mismatch}]
+    return state
 
 
 @mcp.tool()
@@ -531,12 +542,16 @@ def place_track_sequence(
     placed = 0
     failed_index = None
     error = None
+    mismatches: list[dict[str, Any]] = []
     try:
         ride_type = _get_ride_type(ride_id)
         for index, segment in enumerate(segments):
             failed_index = index
-            _place_track_segment(ride_id, ride_type, segment)
+            placement = _place_track_segment(ride_id, ride_type, segment)
             placed += 1
+            mismatch = placement.get("endpointPredictionMismatch") if isinstance(placement, dict) else None
+            if isinstance(mismatch, dict):
+                mismatches.append({"segment_index": index, **mismatch})
         failed_index = None
     except APIError as e:
         error = str(e)
@@ -544,6 +559,8 @@ def place_track_sequence(
     result = get_coaster_state(ride_id)
     summary = result[0] if isinstance(result, list) else result
     summary["placed_count"] = placed
+    if mismatches:
+        summary["endpoint_prediction_mismatches"] = mismatches
     if error is not None:
         summary["success"] = False
         summary["failed_index"] = failed_index
@@ -602,6 +619,7 @@ def get_coaster_state(ride_id: int) -> Any:
             "nextEndpoint": next_endpoint,
             "isCircuitComplete": is_circuit_complete,
             "validPieceEndpoints": valid_piece_endpoints,
+            "candidateStatus": valid_pieces_resp.get("candidateStatus"),
             "trackElements": history_resp.get("trackElements"),
         }
 
@@ -699,10 +717,10 @@ def get_plugin_info() -> dict[str, Any]:
     """
     try:
         info = api_client.get_plugin_info()
-        return {"version": info.get("version"), "expected_version": "0.8.0",
-                "matches": info.get("version") == "0.8.0"}
+        return {"version": info.get("version"), "expected_version": "0.9.0",
+                "matches": info.get("version") == "0.9.0"}
     except APIError as e:
-        return {"success": False, "error": str(e), "expected_version": "0.8.0"}
+        return {"success": False, "error": str(e), "expected_version": "0.9.0"}
 
 
 @mcp.tool()

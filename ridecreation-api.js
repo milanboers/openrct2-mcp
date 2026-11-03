@@ -1,4 +1,4 @@
-var PLUGIN_VERSION = "0.8.0";
+var PLUGIN_VERSION = "0.9.0";
 
 function main() {
     "use strict";
@@ -897,8 +897,9 @@ function main() {
                             request.params.direction,
                             request.params.trackType
                         );
-                        if (predictedEnd && (predictedEnd.x !== nextTileX || predictedEnd.y !== nextTileY ||
-                            predictedEnd.z !== nextTileZ || predictedEnd.direction !== nextDirection)) {
+                        var endpointMismatch = predictedEnd && (predictedEnd.x !== nextTileX || predictedEnd.y !== nextTileY ||
+                            predictedEnd.z !== nextTileZ || predictedEnd.direction !== nextDirection);
+                        if (endpointMismatch) {
                             console.log("WARNING: endpoint prediction mismatch for trackType", request.params.trackType,
                                 "- predicted (" + predictedEnd.x + "," + predictedEnd.y + "," + predictedEnd.z + ",dir " + predictedEnd.direction +
                                 ") actual (" + nextTileX + "," + nextTileY + "," + nextTileZ + ",dir " + nextDirection + ")");
@@ -935,6 +936,13 @@ function main() {
                             }
                         };
 
+                        if (endpointMismatch) {
+                            responsePayload.endpointPredictionMismatch = {
+                                predicted: predictedEnd,
+                                actual: responsePayload.nextEndpoint
+                            };
+                        }
+
                         // Add station detection to response if applicable
                         if (isStationPiece) {
                             responsePayload.stationDetected = true;
@@ -965,6 +973,7 @@ function main() {
                             validPieces: [0, 1, 2, 3], // Only flat and station pieces to start
                             lastTrackType: null,
                             stateCategory: "initial",
+                            candidateStatus: "initial",
                             isCircuitComplete: false
                         }
                     });
@@ -985,11 +994,23 @@ function main() {
                 });
                 var isStation = lastPiece.trackType === 1 || lastPiece.trackType === 2 || lastPiece.trackType === 3;
                 var validPieces = [];
-                if (!hasInverted && previous &&
-                    (supportedCardinalPieces.indexOf(lastPiece.trackType) !== -1 || lastPiece.trackType === 2) &&
-                    typeof previous.endDirection === "number" && previous.endDirection >= 0 && previous.endDirection < 4 &&
-                    typeof lastPiece.nextDirection === "number" && lastPiece.nextDirection >= 0 && lastPiece.nextDirection < 4 &&
-                    typeof previous.endSlope === "number" && typeof previous.endBank === "number") {
+                var candidateStatus = "available";
+                if (state.isComplete) {
+                    candidateStatus = "circuit_complete";
+                } else if (hasInverted) {
+                    candidateStatus = "unsupported_inverted_track";
+                } else if (!previous) {
+                    candidateStatus = "missing_previous_descriptor";
+                } else if (typeof previous.endDirection !== "number" ||
+                    typeof previous.endSlope !== "number" || typeof previous.endBank !== "number" ||
+                    typeof lastPiece.nextDirection !== "number") {
+                    candidateStatus = "incomplete_previous_geometry";
+                } else if (previous.endDirection < 0 || previous.endDirection >= 4 ||
+                    lastPiece.nextDirection < 0 || lastPiece.nextDirection >= 4) {
+                    candidateStatus = "unsupported_diagonal_endpoint";
+                } else if (supportedCardinalPieces.indexOf(lastPiece.trackType) === -1 && lastPiece.trackType !== 2) {
+                    candidateStatus = "unsupported_previous_piece";
+                } else {
                     supportedCardinalPieces.forEach(function (type) {
                         var candidate = geometry[type];
                         if (!candidate || ((type === 1 || type === 3) && !isStation)) return;
@@ -1000,6 +1021,7 @@ function main() {
                             validPieces.push(type);
                         }
                     });
+                    if (validPieces.length === 0) candidateStatus = "no_matching_supported_pieces";
                 }
 
                 var buildPosition = {
@@ -1013,6 +1035,7 @@ function main() {
                     success: true,
                     payload: {
                         validPieces: validPieces,
+                        candidateStatus: candidateStatus,
                         validPieceEndpoints: buildValidPieceEndpoints(buildPosition, validPieces),
                         lastTrackType: lastPiece.trackType,
                         stateCategory: stateCategory,

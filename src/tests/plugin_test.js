@@ -95,7 +95,7 @@ function makeIterator(startEl) {
             if (node.next) return posOf(node.next);
             // Open end: virtual exit one tile in the current direction.
             const dx = node.direction === 0 ? -1 : node.direction === 2 ? 1 : 0;
-            const dy = node.direction === 1 ? -1 : node.direction === 3 ? 1 : 0;
+            const dy = node.direction === 1 ? 1 : node.direction === 3 ? -1 : 0;
             return { x: (node.tileX + dx) * 32, y: (node.tileY + dy) * 32, z: node.originZ, direction: node.direction };
         },
         get previousPosition() {
@@ -139,7 +139,7 @@ const TEST_SEGMENTS = [
     seg(32, 0, 0, 0, 0, 0, 0, 2, 2), seg(33, 0, 0, 0, 0, 0, 0, 4, 4),
     seg(42, -32, -32, 0, 3), seg(43, -32, 32, 0, 1),
     seg(44, -32, -32, 0, 3, 0, 0, 2, 2), seg(45, -32, 32, 0, 1, 0, 0, 4, 4),
-    seg(99, 0, 0, 0, 0),
+    seg(99, 0, 0, 0, 0), seg(200, 0, 0, 0, 4), seg(201, 0, 0, 0, 0),
 ];
 
 global.registerPlugin = (p) => {
@@ -326,16 +326,40 @@ clearTiles();
 const inverted = makeTrack(20, 20, 0, 0, 112);
 inverted.isInverted = true;
 place(8, inverted);
-assert(request("getValidNextPieces", { rideId: 8 }).payload.validPieces.length === 0,
-    "inverted track does not receive unvalidated cardinal candidates");
+let blockedState = request("getValidNextPieces", { rideId: 8 }).payload;
+assert(blockedState.validPieces.length === 0 && blockedState.candidateStatus === "unsupported_inverted_track",
+    "inverted track reports why cardinal candidates are unavailable");
 clearTiles();
 place(8, makeTrack(20, 20, 0, 4, 112));
-assert(request("getValidNextPieces", { rideId: 8 }).payload.validPieces.length === 0,
-    "diagonal endpoints do not receive unvalidated cardinal candidates");
+blockedState = request("getValidNextPieces", { rideId: 8 }).payload;
+assert(blockedState.validPieces.length === 0 && blockedState.candidateStatus === "unsupported_diagonal_endpoint",
+    "diagonal endpoints report why cardinal candidates are unavailable");
+clearTiles();
+place(8, makeTrack(20, 20, 200, 0, 112));
+blockedState = request("getValidNextPieces", { rideId: 8 }).payload;
+assert(blockedState.candidateStatus === "unsupported_diagonal_endpoint",
+    "diagonal descriptors are identified even outside the supported piece set");
+clearTiles();
+place(8, makeTrack(20, 20, 201, 0, 112));
+blockedState = request("getValidNextPieces", { rideId: 8 }).payload;
+assert(blockedState.candidateStatus === "unsupported_previous_piece",
+    "unsupported cardinal pieces report the support boundary");
 clearTiles();
 place(8, makeTrack(20, 20, 999, 0, 112));
-assert(request("getValidNextPieces", { rideId: 8 }).payload.validPieces.length === 0,
-    "missing descriptors do not fall back to flat candidates");
+blockedState = request("getValidNextPieces", { rideId: 8 }).payload;
+assert(blockedState.validPieces.length === 0 && blockedState.candidateStatus === "missing_previous_descriptor",
+    "missing descriptors report why candidates are unavailable");
+
+// Report when the game's actual endpoint disagrees with the prediction.
+clearTiles();
+actionHandlers["trackplace"] = (args, cb) => {
+    place(args.ride, makeTrack(10, 11, 0, 2, args.z));
+    cb({ position: { x: args.x, y: args.y, z: args.z } });
+};
+const mismatchResult = request("placeTrackPiece", { ...trackArgs, trackType: 0, hasChainLift: false });
+assert(mismatchResult.success && mismatchResult.payload.endpointPredictionMismatch.predicted.x === 9 &&
+    mismatchResult.payload.endpointPredictionMismatch.actual.x === 11,
+    "placement returns predicted and actual endpoints when they disagree");
 
 // 3. A station-only track keeps offering station pieces alongside normal track.
 clearTiles();
@@ -377,6 +401,8 @@ linkSeq(els5, true);
 for (const el of els5) place(ride5, el);
 r2 = request("getValidNextPieces", { rideId: ride5 });
 assert(r2.payload.isCircuitComplete === true, "closed loop reported as circuit complete");
+assert(r2.payload.candidateStatus === "circuit_complete" && r2.payload.validPieces.length === 0,
+    "completed circuit reports why no further pieces are offered");
 r = request("getTrackHistory", { rideId: ride5 });
 assert(r.payload.history.length === 5, "closed loop history has 5 entries, no duplicates (got " + r.payload.history.length + ")");
 
@@ -439,6 +465,20 @@ assert(eps["16"] && eps["16"].x === 8 && eps["16"].y === 7 && eps["16"].directio
     "LeftQuarterTurn5Tiles predicts a left turn ending facing direction 3 (got " + JSON.stringify(eps["16"]) + ")");
 assert(eps["17"] && eps["17"].x === 8 && eps["17"].y === 13 && eps["17"].direction === 1,
     "RightQuarterTurn5Tiles predicts a right turn ending facing direction 1 (got " + JSON.stringify(eps["17"]) + ")");
+
+// Predictions rotate with the current endpoint direction.
+for (const [direction, flatX, flatY, turnX, turnY, turnDirection] of [
+    [0, 18, 20, 17, 17, 3], [1, 20, 22, 17, 23, 0],
+    [2, 22, 20, 23, 23, 1], [3, 20, 18, 23, 17, 2],
+]) {
+    clearTiles();
+    place(7, makeTrack(20, 20, 0, direction, 112));
+    const predicted = request("getValidNextPieces", { rideId: 7 }).payload.validPieceEndpoints;
+    assert(predicted[0].x === flatX && predicted[0].y === flatY && predicted[0].direction === direction,
+        "flat endpoint prediction at direction " + direction);
+    assert(predicted[16].x === turnX && predicted[16].y === turnY && predicted[16].direction === turnDirection,
+        "turn endpoint prediction at direction " + direction);
+}
 
 // ---------------------------------------------------------------------------
 

@@ -64,10 +64,14 @@ async def run(timeout: float) -> None:
         state = await call(client, "create_ride", name="MCP Smoke Test")
         ride_id = state["ride_id"]
         print(f"Created ride {ride_id}. It will remain in the park.", flush=True)
+        if state.get("endpoint_prediction_mismatches"):
+            raise RuntimeError(f"Station endpoint prediction mismatch: {state['endpoint_prediction_mismatches']}")
 
         chain_pieces = {"FlatToUp25", "Up25", "Up25ToFlat"}
         segments = [{"track_type": name, "has_chain_lift": name in chain_pieces} for name in TRACK]
         state = await call(client, "place_track_sequence", ride_id=ride_id, segments=segments)
+        if state.get("endpoint_prediction_mismatches"):
+            raise RuntimeError(f"Endpoint prediction mismatches: {state['endpoint_prediction_mismatches']}")
         if not state.get("is_circuit_complete"):
             raise RuntimeError(f"Circuit is not complete: {json.dumps(state)}")
         print(f"Placed {state['placed_count']} pieces and closed the circuit.", flush=True)

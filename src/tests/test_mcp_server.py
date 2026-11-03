@@ -165,6 +165,17 @@ class TestPlaceTrackSegment:
             mock_place.assert_called_once()
 
 
+    def test_place_track_segment_reports_endpoint_mismatch(self) -> None:
+        mismatch = {'predicted': {'x': 9}, 'actual': {'x': 11}}
+        with patch.object(api_client, 'get_valid_next_pieces', return_value={
+            'validPieces': [0], 'position': {'x': 10, 'y': 20, 'z': 14, 'direction': 0},
+        }), patch.object(api_client, 'place_track_piece', return_value={'endpointPredictionMismatch': mismatch}), \
+             patch('mcp_server._get_ride_type', return_value=52), \
+             patch('mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']):
+            result = place_track_segment(1, 'Flat')
+
+        assert result[0]['endpoint_prediction_mismatches'] == [{'segment_index': 0, **mismatch}]
+
     @pytest.mark.parametrize('failure', ['complete', 'invalid', 'placement'])
     def test_place_track_segment_failure(self, failure: str) -> None:
         from api_client import APIError
@@ -213,6 +224,23 @@ class TestPlaceTrackSequence:
             assert place.call_args_list[1].kwargs['tile_coordinate_x'] == 9
             assert place.call_args_list[1].kwargs['has_chain_lift'] is True
             final.assert_called_once_with(1)
+
+    def test_sequence_reports_mismatch_even_when_later_piece_fails(self) -> None:
+        from api_client import APIError
+
+        mismatch = {'predicted': {'x': 9}, 'actual': {'x': 11}}
+        valid = {'validPieces': [0], 'position': {'x': 10, 'y': 20, 'z': 14, 'direction': 0}}
+        with patch.object(api_client, 'get_valid_next_pieces', return_value=valid), \
+             patch.object(api_client, 'place_track_piece', side_effect=[
+                 {'endpointPredictionMismatch': mismatch}, APIError('Location occupied'),
+             ]), patch('mcp_server._get_ride_type', return_value=52), \
+             patch('mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']):
+            result = place_track_sequence(1, [TrackSegment(track_type='Flat')] * 2)
+
+        assert result[0]['success'] is False
+        assert result[0]['placed_count'] == 1
+        assert result[0]['failed_index'] == 1
+        assert result[0]['endpoint_prediction_mismatches'] == [{'segment_index': 0, **mismatch}]
 
     @pytest.mark.parametrize('failure', ['invalid', 'placement', 'complete'])
     def test_sequence_stops_on_failure(self, failure: str) -> None:
@@ -344,8 +372,8 @@ class TestCoasterTools:
             delete.assert_called_once_with(1)
 
     def test_get_plugin_info(self) -> None:
-        with patch.object(api_client, 'get_plugin_info', return_value={'version': '0.8.0'}):
-            assert get_plugin_info() == {'version': '0.8.0', 'expected_version': '0.8.0', 'matches': True}
+        with patch.object(api_client, 'get_plugin_info', return_value={'version': '0.9.0'}):
+            assert get_plugin_info() == {'version': '0.9.0', 'expected_version': '0.9.0', 'matches': True}
 
     def test_list_rides_failure_is_not_empty_list(self) -> None:
         from api_client import APIError
@@ -370,6 +398,16 @@ class TestCoasterTools:
             assert result[0]["id"] == 1
             assert result[0]["type"] == 52
             assert result[0]["ride_type_name"] == "Wooden Roller Coaster"
+
+    def test_candidate_status_reported_from_plugin(self) -> None:
+        with patch.object(api_client, 'get_valid_next_pieces', return_value={
+            'validPieces': [], 'candidateStatus': 'unsupported_diagonal_endpoint',
+        }), patch.object(api_client, 'get_track_history', return_value={'history': []}), \
+             patch.object(api_client, 'list_all_rides', return_value=[{'id': 1, 'type': 52}]):
+            result = get_coaster_state(1)
+
+        assert result[0]['valid_pieces'] == []
+        assert result[0]['candidate_status'] == 'unsupported_diagonal_endpoint'
 
     def test_circuit_complete_reported_from_plugin(self) -> None:
         """The plugin's isCircuitComplete flag must flow through to the state."""
