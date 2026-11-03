@@ -216,3 +216,6 @@ __marimo__/
 .streamlit/secrets.toml
 
 .DS_Store
+
+# Local agent-run reports, model settings, costs and traces
+/benchmarks/runs/

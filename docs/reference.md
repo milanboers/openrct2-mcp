@@ -173,6 +173,8 @@ The skill (`skills/build-coaster/SKILL.md`) tells the agent how to build a valid
 
 Installing the plugin, restarting OpenRCT2, reloading the MCP server, and exposing tools to an agent are separate steps. A running game or MCP process keeps its loaded code. A subagent can also have a narrower tool allowlist than its parent. Verify `get_plugin_info` and the required game tools **in the session that will build**. For Pi subagents, a dedicated builder profile needs an explicit `mcp:openrct2` tool selection; the built-in coding worker does not inherit MCP tools.
 
+Pi resolves a child's `mcp:` selection from the parent's current tool inventory. After adding tools, reconnect/reload the **parent** MCP connection before launching a child. A fresh child server can register new tools while its parent-resolved allowlist still excludes them. Check the parent's inventory as well as the child's actual exposed tools; a successful plugin handshake alone does not establish tool availability.
+
 A cheap read-only check of a fresh MCP connection is available:
 
 ```sh

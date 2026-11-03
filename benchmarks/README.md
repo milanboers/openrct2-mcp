@@ -198,13 +198,10 @@ Larger batches belong to a separately budgeted reliability study, not routine
 feature development. Keep settings, budgets and evidence collection consistent
 when comparing runs.
 
-`results/luna-compact-pilot.json` records one Luna/medium attempt on plugin 0.12.0:
-19 pieces, an open circuit, 12 MCP calls, three rejected placement requests and
-zero unknown outcomes. The agent stopped after self-collision without attempting
-removal. The wide endpoint response was truncated. Subsequent changes clarified
-revision permission and added compact spatial output; neither has yet been
-shown to improve agent success. A prior setup-only failure is not counted as a
-ride-building attempt. This is not a model ranking.
+Keep per-run reports, model settings, costs and traces under `benchmarks/runs/`
+(ignored by Git), or outside the checkout. Tracked `results/` contains only
+curated, model-independent scripted calibration summaries. Individual agent
+attempts are not model rankings or success-rate estimates.
 
 Before spending on a run, use `scripts/check_ready.py` for a fresh read-only
 server/plugin/park check, and verify the actual agent's MCP tool allowlist. The
@@ -227,3 +224,39 @@ scenario objective completion. See the main README for invocation and limits.
 queue ownership, stale-removal rejection, and a checkpoint verified on disk and
 reloaded successfully. The existing interactive park was unchanged. The full
 local trace and saved park are not bundled with this concise result summary.
+
+## Guest-use agent brief
+
+`guest-coaster.json` asks for one working wooden coaster and flat queue/exit
+connections to the prepared 150×150 sandbox's known public-path anchor. There is
+no excitement target. The agent chooses the layout and declares its routes as
+`{"ride_id": 0, "entrance_route": [[x, y], ...], "exit_route": [[x, y], ...]}`.
+Each route starts on the external path tile by its building and ends at
+`[146, 67]`; building tiles are excluded. Coordinates are integer tile indices,
+all path routes use Z=14, and unavailable routes remain empty rather than guessed.
+
+The ordinary `evaluate_ride.py` checks only coaster acceptance, not guest use.
+For guest acceptance, preserve a pre-agent `setup.json` with the observed
+`plugin`, `park`, empty `rides` list and exact `anchor` path record, then use:
+
+```sh
+uv run --locked python scripts/evaluate_guest_ride.py \
+  --setup /tmp/guest-trial/setup.json --routes /tmp/guest-trial/routes.json \
+  --ride-id ACTUAL_ID --output /tmp/guest-trial/result.json
+```
+
+The collector is read-only, refuses an existing result, and checks actual path
+edges, building-facing geometry, queue assignment, anchor preservation and the
+coaster criteria. It takes a fresh customer baseline after the agent stops and
+observes for up to 240 seconds, requiring additional completed customers while
+the final layout and observed paths stay stable. Existing lifetime customers
+alone cannot pass. It skips the long wait for an incomplete or closed ride.
+Exit codes are 0 for pass, 1 for acceptance failure, and 2 for collection/input
+failure. Individual guest trajectories and general pathfinding remain unproven.
+
+The evaluator was live-calibrated against the saved scripted park and observed
+22 additional customers. A fresh child server can register new tools while its
+parent-resolved allowlist still excludes them. Reconnect/reload the parent MCP
+inventory before resolving another child's tool allowlist, then check actual
+child exposure before construction. Infrastructure failures are excluded from
+design-performance results. No automatic retry or model escalation follows one.
