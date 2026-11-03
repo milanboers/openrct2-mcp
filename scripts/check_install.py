@@ -36,6 +36,7 @@ def check_archives(sdist: Path, wheel: Path) -> None:
         files = {name.split('/', 1)[1] for name in archive.getnames() if '/' in name}
     required = {
         'pyproject.toml', 'uv.lock', 'ridecreation-api.js', 'skills/build-coaster/SKILL.md',
+        'docs/reference.md',
         'scenarios/sandbox.park', 'scripts/smoke_test.py', 'benchmarks/working-coaster.json',
         'scripts/build_reference.py', 'benchmarks/references/rated-coaster.json', 'src/tests/plugin_server.js',
         'src/openrct2_mcp/mcp_server.py', 'scripts/prepare_trial.py',

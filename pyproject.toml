@@ -28,6 +28,7 @@ packages = ["src/openrct2_mcp"]
 include = [
     "/src",
     "/scripts",
+    "/docs",
     "/benchmarks",
     "/skills",
     "/scenarios",
