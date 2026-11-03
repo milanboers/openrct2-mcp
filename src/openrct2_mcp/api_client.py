@@ -7,15 +7,19 @@ import socket
 import threading
 from typing import Any, Optional
 
+from .protocol import READ_ENDPOINTS, compatibility_error
+
 logger = logging.getLogger(__name__)
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
 
 class APIError(Exception):
     """Exception raised when API request fails."""
 
-    def __init__(self, message: str, *, outcome: str = "rejected"):
+    def __init__(self, message: str, *, outcome: str = "rejected", details: Optional[dict[str, Any]] = None):
         super().__init__(message)
-        self.outcome = outcome
+        self.outcome = outcome if outcome in ("confirmed", "rejected", "unknown", "partial") else "unknown"
+        self.details = details or {}
 
 
 class OpenRCT2API:
@@ -27,8 +31,9 @@ class OpenRCT2API:
     def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT):
         self.host = host
         self.port = port
+        self._compatible = False
         self._sock: Optional[socket.socket] = None
-        self._file_obj: Optional[io.TextIOWrapper] = None
+        self._file_obj: Optional[io.BufferedReader] = None
         # The socket is shared: serialise request/response pairs so concurrent
         # tool calls can't read each other's responses.
         self._lock = threading.Lock()
@@ -36,6 +41,7 @@ class OpenRCT2API:
     def _get_connection(self, timeout: float = 5.0) -> socket.socket:
         """Establish or return existing connection."""
         if self._sock:
+            self._sock.settimeout(timeout)
             return self._sock
 
         try:
@@ -43,7 +49,7 @@ class OpenRCT2API:
             self._sock.settimeout(timeout)
             self._sock.connect((self.host, self.port))
             # makefile returns a file-like object for the socket
-            self._file_obj = self._sock.makefile("r", encoding="utf-8")  # type: ignore
+            self._file_obj = self._sock.makefile("rb")
             return self._sock
         except socket.error as e:
             self._close_connection()
@@ -63,6 +69,12 @@ class OpenRCT2API:
                 pass
         self._sock = None
         self._file_obj = None
+        self._compatible = False
+
+    def close(self) -> None:
+        """Release the persistent connection after in-flight requests finish."""
+        with self._lock:
+            self._close_connection()
 
     def _send_request(
         self,
@@ -71,40 +83,64 @@ class OpenRCT2API:
         timeout: float = 5.0,
     ) -> Any:
         """Send a JSON request and wait for response."""
-        message = json.dumps({"endpoint": endpoint, "params": params or {}}) + "\n"
-
         with self._lock:
-            try:
-                sock = self._get_connection(timeout)
-                sock.sendall(message.encode("utf-8"))
+            if endpoint not in READ_ENDPOINTS and not self._compatible:
+                try:
+                    info = self._exchange("getPluginInfo", {}, timeout)
+                    error = compatibility_error(info) if isinstance(info, dict) else 'Invalid plugin information'
+                    if error:
+                        raise APIError(error)
+                except APIError as error:
+                    raise APIError(f'Mutation compatibility preflight failed: {error}', details={
+                        'category': 'compatibility', 'endpoint': endpoint,
+                    }) from error
+                self._compatible = True
+            return self._exchange(endpoint, params or {}, timeout)
 
-                if self._file_obj is None:
-                    raise APIError("Connection not established")
+    def _exchange(self, endpoint: str, params: dict[str, Any], timeout: float) -> Any:
+        """Exchange one frame while the caller holds the connection lock."""
+        message = json.dumps({"endpoint": endpoint, "params": params}) + "\n"
+        try:
+            sock = self._get_connection(timeout)
+            sock.sendall(message.encode("utf-8"))
 
-                response_line = self._file_obj.readline(16 * 1024 * 1024 + 1)
-                if not response_line:
-                    self._close_connection()
-                    raise APIError("Empty response (connection closed by server)", outcome="unknown")
+            if self._file_obj is None:
+                raise APIError("Connection not established")
 
-                if len(response_line) > 16 * 1024 * 1024:
-                    self._close_connection()
-                    raise APIError("API response exceeds 16 MiB", outcome="unknown")
-                result = json.loads(response_line)
-                if not isinstance(result, dict) or not isinstance(result.get("success"), bool):
-                    self._close_connection()
-                    raise APIError("Invalid API response envelope", outcome="unknown")
-                if not result.get("success", False):
-                    raise APIError(result.get("error", "Unknown API error"), outcome=result.get("outcome", "rejected"))
-
-                payload = result.get("payload", {})
-                return payload
-
-            except (socket.timeout, socket.error) as e:
+            response_line = self._file_obj.readline(MAX_RESPONSE_BYTES + 1)
+            if not response_line:
                 self._close_connection()
-                raise APIError(f"API communication error: {e}", outcome="unknown")
-            except (json.JSONDecodeError, UnicodeError) as e:
+                raise APIError("Empty response (connection closed by server)", outcome="unknown")
+
+            if len(response_line) > MAX_RESPONSE_BYTES:
                 self._close_connection()
-                raise APIError(f"Failed to decode API response: {e}", outcome="unknown")
+                raise APIError("API response exceeds 16 MiB", outcome="unknown")
+            if not response_line.endswith(b"\n"):
+                self._close_connection()
+                raise APIError("Incomplete API response (missing newline)", outcome="unknown")
+            result = json.loads(response_line.decode("utf-8"))
+            if not isinstance(result, dict) or not isinstance(result.get("success"), bool):
+                self._close_connection()
+                raise APIError("Invalid API response envelope", outcome="unknown")
+            if not result.get("success", False):
+                details = result.get("error_details") or {}
+                if not isinstance(details, dict):
+                    self._close_connection()
+                    raise APIError("Invalid API error details", outcome="unknown")
+                raise APIError(
+                    result.get("error", "Unknown API error"), outcome=result.get("outcome", "rejected"),
+                    details={**details, "endpoint": endpoint},
+                )
+
+            payload = result.get("payload", {})
+            return payload
+
+        except (socket.timeout, socket.error) as e:
+            self._close_connection()
+            raise APIError(f"API communication error: {e}", outcome="unknown")
+        except (json.JSONDecodeError, UnicodeError) as e:
+            self._close_connection()
+            raise APIError(f"Failed to decode API response: {e}", outcome="unknown")
 
     def create_ride(
         self,
@@ -153,6 +189,8 @@ class OpenRCT2API:
         is_from_track_design: bool = False,
         has_chain_lift: Optional[bool] = None,
         query: bool = False,
+        expected_endpoint: Optional[dict[str, Any]] = None,
+        expected_piece_count: Optional[int] = None,
     ) -> dict[str, Any]:
         """Place or non-mutatingly query a track piece."""
         params = {
@@ -172,7 +210,13 @@ class OpenRCT2API:
         if has_chain_lift is not None:
             params["hasChainLift"] = has_chain_lift
 
-        result = self._send_request("queryTrackPiece" if query else "placeTrackPiece", params)
+        endpoint = "queryTrackPiece" if query else "placeTrackPiece"
+        if expected_endpoint is not None and not query:
+            endpoint = "appendTrackPiece"
+            params["expectedEndpoint"] = expected_endpoint
+            if expected_piece_count is not None:
+                params["expectedPieceCount"] = expected_piece_count
+        result = self._send_request(endpoint, params)
         if not isinstance(result, dict):
             raise APIError("Unexpected response format from placeTrackPiece", outcome="unknown")
         return result
@@ -181,6 +225,12 @@ class OpenRCT2API:
         result = self._send_request("getCoasterState", {"rideId": ride_id})
         if not isinstance(result, dict):
             raise APIError("Unexpected response format from getCoasterState", outcome="unknown")
+        return result
+
+    def reset_ride(self, ride_id: int) -> dict[str, Any]:
+        result = self._send_request("resetRide", {"rideId": ride_id})
+        if not isinstance(result, dict):
+            raise APIError("Unexpected response format from resetRide", outcome="unknown")
         return result
 
     def close_ride(self, ride_id: int) -> Any:
@@ -208,9 +258,26 @@ class OpenRCT2API:
         # Ensure elements are dicts
         return [item for item in result if isinstance(item, dict)]
 
-    def delete_last_track_piece(self, ride_id: int) -> dict[str, Any]:
-        """Delete the last placed track piece."""
-        result = self._send_request("deleteLastTrackPiece", {"rideId": ride_id})
+    def preview_track_removal(self, ride_id: int) -> dict[str, Any]:
+        result = self._send_request("previewTrackRemoval", {"rideId": ride_id})
+        if not isinstance(result, dict):
+            raise APIError("Unexpected response format from previewTrackRemoval", outcome="unknown")
+        return result
+
+    def get_loaded_ride_objects(self) -> list[dict[str, Any]]:
+        result = self._send_request("getLoadedRideObjects")
+        if not isinstance(result, list):
+            raise APIError("Unexpected response format from getLoadedRideObjects", outcome="unknown")
+        return result
+
+    def delete_last_track_piece(
+        self, ride_id: int, expected_target: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Remove the terminal piece, optionally rechecking a preview target."""
+        params: dict[str, Any] = {"rideId": ride_id}
+        if expected_target is not None:
+            params["expectedTarget"] = expected_target
+        result = self._send_request("deleteLastTrackPiece", params)
         if not isinstance(result, dict):
             raise APIError("Unexpected response format from deleteLastTrackPiece", outcome="unknown")
         return result
@@ -251,6 +318,18 @@ class OpenRCT2API:
             raise APIError("Unexpected response format from getMapArea", outcome="unknown")
         return result
 
+    def get_park_status(self) -> dict[str, Any]:
+        result = self._send_request("getParkStatus")
+        if not isinstance(result, dict):
+            raise APIError("Unexpected response format from getParkStatus", outcome="unknown")
+        return result
+
+    def get_ride_station_access(self, ride_id: int, radius: int = 2) -> dict[str, Any]:
+        result = self._send_request("getRideStationAccess", {"rideId": ride_id, "radius": radius})
+        if not isinstance(result, dict):
+            raise APIError("Unexpected response format from getRideStationAccess", outcome="unknown")
+        return result
+
     def get_plugin_info(self) -> dict[str, Any]:
         result = self._send_request("getPluginInfo")
         if not isinstance(result, dict):
@@ -266,3 +345,21 @@ class OpenRCT2API:
     def delete_all_rides(self) -> Any:
         """Delete all rides."""
         return self._send_request("deleteAllRides")
+
+    def get_path_objects(self) -> dict[str, Any]:
+        return self._send_request('getPathObjects')
+
+    def get_path_area(self, x: int, y: int, radius: int) -> dict[str, Any]:
+        return self._send_request('getPathArea', {'x': x, 'y': y, 'radius': radius})
+
+    def place_path_tile(self, **params: Any) -> dict[str, Any]:
+        return self._send_request('placePathTile', params)
+
+    def remove_path_tile(self, **params: Any) -> dict[str, Any]:
+        return self._send_request('removePathTile', params)
+
+    def open_ride(self, ride_id: int) -> Any:
+        return self._send_request('openRide', {'rideId': ride_id})
+
+    def save_park(self, filename: str) -> dict[str, Any]:
+        return self._send_request('savePark', {'filename': filename})

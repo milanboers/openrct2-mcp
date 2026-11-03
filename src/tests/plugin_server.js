@@ -59,7 +59,9 @@ const map = {
     size: { x: 128, y: 128 },
     getTile(x, y) {
         const arr = tiles.get(x + "," + y);
-        return arr ? { numElements: arr.length, elements: arr } : null;
+        return arr ? { numElements: arr.length, elements: arr } : { numElements: 1, elements: [
+            { type: "surface", baseZ: 112, clearanceZ: 112, isGhost: false, slope: 0, waterHeight: 0 }
+        ] };
     },
     getTrackIterator(pos, index) {
         const tile = map.getTile(Math.round(pos.x / 32), Math.round(pos.y / 32));
@@ -67,7 +69,8 @@ const map = {
         if (!el) return null;
         return makeIterator(el);
     },
-    getRide: () => null,
+    getRide: id => ridesList.find(ride => ride.id === id) || null,
+    getEntity: () => null,
     rides: {
         forEach: (fn) => {
             ridesList.forEach(fn);
@@ -121,7 +124,8 @@ let nextRideId = 0;
 actionHandlers["ridecreate"] = (args, cb) => {
     nextRideId++;
     rideTracks[nextRideId] = [];
-    ridesList.push({ id: nextRideId, name: "Ride " + nextRideId, type: args.rideType });
+    ridesList.push({ id: nextRideId, name: "Ride " + nextRideId, type: args.rideType, status: "closed",
+        stations: [], vehicles: [], excitement: -1, totalCustomers: 0, guestCount: 0 });
     cb({ ride: nextRideId });
 };
 
@@ -144,12 +148,27 @@ function reclassifyStation(ride) {
             list[idx].trackType = i === 0 ? 2 : (i === stationIndices.length - 1 ? 1 : 3);
         }
     }
+    const rideInfo = map.getRide(ride);
+    const previous = rideInfo.stations[0];
+    if (stationIndices.length) {
+        const start = list[stationIndices[0]];
+        rideInfo.stations = [{ start: { x: start.tileX * 32, y: start.tileY * 32, z: start.originZ },
+            length: stationIndices.length, entrance: previous ? previous.entrance : null,
+            exit: previous ? previous.exit : null }];
+    } else {
+        rideInfo.stations = [];
+    }
 }
 
 actionHandlers["trackplace"] = (args, cb) => {
     const ride = args.ride;
     const tileX = Math.floor(args.x / 32);
     const tileY = Math.floor(args.y / 32);
+    // The installed-server TCP fixture has one obstruction to exercise partial outcomes.
+    if (process.argv.includes("--tcp") && tileX === 64 && tileY === 66) {
+        cb({ error: 9, errorTitle: "Cannot build", errorMessage: "Stub obstruction" });
+        return;
+    }
     const el = makeTrack(tileX, tileY, args.trackType, args.direction, args.z);
     place(ride, el);
     const list = rideTracks[ride];
@@ -179,7 +198,7 @@ actionHandlers["trackremove"] = (args, cb) => {
     }
     if (removed) {
         removeElement(removed);
-        const list = rideTracks[args.ride];
+        const list = rideTracks[removed.ride];
         if (list) {
             const idx = list.indexOf(removed);
             if (idx !== -1) list.splice(idx, 1);
@@ -209,23 +228,60 @@ actionHandlers["ridedemolish"] = (args, cb) => {
     cb({});
 };
 actionHandlers["ridesetstatus"] = (args, cb) => {
+    const ride = map.getRide(args.ride);
+    if (ride.status === "closed" && args.status === 0) ride.vehicles = [];
+    ride.status = ["closed", "open", "testing"][args.status];
     cb({});
 };
 actionHandlers["rideentranceexitplace"] = (args, cb) => {
+    const station = map.getRide(args.ride).stations[args.station];
+    station[args.isExit ? "exit" : "entrance"] = { x: args.x, y: args.y, z: station.start.z, direction: args.direction };
     cb({});
+};
+
+actionHandlers["footpathplace"] = (args, cb) => {
+    const x = args.x / 32, y = args.y / 32;
+    const arr = map.getTile(x, y).elements;
+    const el = { type: "footpath", baseZ: args.z, clearanceZ: args.z + 32, edges: 0,
+        slopeDirection: null, isQueue: !!args.constructFlags, isGhost: false,
+        surfaceObject: args.object, railingsObject: args.railingsObject, object: null, ride: null, station: null };
+    arr.push(el); tiles.set(x + "," + y, arr); cb({ cost: 100 });
+};
+actionHandlers["footpathremove"] = (args, cb) => {
+    const key = args.x / 32 + "," + args.y / 32;
+    tiles.set(key, tiles.get(key).filter(el => el.type !== "footpath" || el.baseZ !== args.z));
+    cb({ cost: -50 });
 };
 
 global.registerPlugin = (p) => {
     global.__plugin = p;
 };
 global.map = map;
+global.park = {
+    name: process.argv.includes("--tcp") ? "mcp-install-" + require("crypto").randomUUID() : "MCP contract stub",
+    cash: 10000, rating: 500, bankLoan: 0, maxBankLoan: 20000, entranceFee: 0,
+    guests: 0, value: 0, companyValue: 10000, getFlag: flag => flag === "noMoney",
+    research: { inventedItems: [{ type: "ride", object: 0, rideType: 52 }], uninventedItems: [],
+        funding: 0, priorities: [], stage: "finished_all", progress: 0 },
+};
+global.date = { ticksElapsed: 1234, day: 1, month: 0, year: 1, monthsElapsed: 0 };
+global.scenario = { name: "Contract stub", status: "inProgress", objective: { type: "haveFun" } };
 global.context = {
+    mode: "normal", paused: false, gameSpeed: 0, apiVersion: 124,
+    getAllObjects: type => type === "footpath_surface" ? [
+        { index: 0, identifier: "test.surface", name: "Test path", flags: 0 }
+    ] : type === "footpath_railings" ? [
+        { index: 0, identifier: "test.railings", name: "Test railings" }
+    ] : [{ index: 0, identifier: "rct2.ride.ptct1", name: "Wooden", rideType: [52],
+        minCarsInTrain: 1, maxCarsInTrain: 7 }],
+    saveGame: () => {},
     getAllTrackSegments: () => [
         { type: 0, endX: 0, endY: 0, endZ: 0, beginDirection: 0, endDirection: 0, beginSlope: 0, endSlope: 0, beginBank: 0, endBank: 0, elements: [{ x: 0, y: 0, z: 0 }] },
         { type: 1, endX: 0, endY: 0, endZ: 0, beginDirection: 0, endDirection: 0, beginSlope: 0, endSlope: 0, beginBank: 0, endBank: 0, elements: [{ x: 0, y: 0, z: 0 }] },
         { type: 2, endX: 0, endY: 0, endZ: 0, beginDirection: 0, endDirection: 0, beginSlope: 0, endSlope: 0, beginBank: 0, endBank: 0, elements: [{ x: 0, y: 0, z: 0 }] },
         { type: 3, endX: 0, endY: 0, endZ: 0, beginDirection: 0, endDirection: 0, beginSlope: 0, endSlope: 0, beginBank: 0, endBank: 0, elements: [{ x: 0, y: 0, z: 0 }] },
     ],
+    queryAction: (name, args, cb) => cb({ cost: 100 }),
     executeAction: (name, args, cb) => {
         const h = actionHandlers[name];
         if (h) h(args, cb);
@@ -240,6 +296,17 @@ const server = {
         if (evt === "connection") connHandler = fn;
     },
     listen: (port) => {
+        if (process.argv.includes("--tcp")) {
+            const listener = require("net").createServer(socket => {
+                socket.setEncoding("utf8");
+                socket.on("error", () => {});
+                connHandler(socket);
+            });
+            listener.listen(0, "127.0.0.1", () => {
+                process.stdout.write(JSON.stringify({ port: listener.address().port, park_name: global.park.name }) + "\n");
+            });
+            return;
+        }
         // A single connection is bridged: requests arrive on stdin, responses
         // go out on stdout.
         let conn = null;

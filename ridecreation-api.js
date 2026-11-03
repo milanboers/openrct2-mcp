@@ -1,7 +1,9 @@
-var PLUGIN_VERSION = "0.10.0";
+var PLUGIN_VERSION = "0.13.0";
 
 function main() {
     "use strict";
+
+    var checkpointNames = Object.create(null);
 
     // Configuration flags - Edit these to change behavior
     var RANDOM_PORT = false;  // Set to true to use a random port instead of 8080
@@ -255,6 +257,32 @@ function main() {
                 trackType: seg ? seg.type : 0
             };
 
+            var originTile = map.getTile(Math.round(pos.x / 32), Math.round(pos.y / 32));
+            var originElement = null;
+            if (originTile) {
+                for (var oi = 0; oi < originTile.numElements; oi++) {
+                    var candidateElement = originTile.elements[oi];
+                    if (candidateElement.type !== "track" || candidateElement.ride !== rideId ||
+                        candidateElement.trackType !== entry.trackType || candidateElement.direction !== entry.direction ||
+                        candidateElement.sequence > 0) continue;
+                    var originIterator = map.getTrackIterator({ x: pos.x, y: pos.y }, oi);
+                    if (originIterator && originIterator.position.z === pos.z) {
+                        originElement = candidateElement;
+                        break;
+                    }
+                }
+            }
+            entry.options = originElement ? {
+                has_chain_lift: typeof originElement.hasChainLift === "boolean" ? originElement.hasChainLift : null,
+                // Only Brakes is validated for speed-setting readback. Reading
+                // this getter on other pieces emits an engine error.
+                brake_speed: entry.trackType === 99 ? numberOrNull(originElement.brakeBoosterSpeed) : null,
+                seat_rotation: typeof originElement.seatRotation === "number" ? originElement.seatRotation : null,
+                colour_scheme: typeof originElement.colourScheme === "number" ? originElement.colourScheme : null,
+                is_inverted: typeof originElement.isInverted === "boolean" ? originElement.isInverted : null,
+                has_cable_lift: typeof originElement.hasCableLift === "boolean" ? originElement.hasCableLift : null
+            } : null;
+
             var nextPos = iterator.nextPosition;
             if (nextPos) {
                 entry.nextX = Math.round(nextPos.x / 32);
@@ -425,6 +453,11 @@ function main() {
         }
     }
 
+    function gameErrorDetails(result) {
+        return { code: result && result.error !== undefined ? result.error : null,
+            title: result && result.errorTitle || null, message: result && result.errorMessage || null };
+    }
+
     function gameError(result) {
         if (!result) return "No result from game";
         var details = [];
@@ -432,6 +465,164 @@ function main() {
         if (result.errorMessage) details.push(result.errorMessage);
         if (!details.length && result.error) details.push(String(result.error));
         return details.join(": ") || "Unknown game error";
+    }
+
+    function numberOrNull(value) {
+        return typeof value === "number" && Number.isFinite(value) ? value : null;
+    }
+
+    function readPosition(value) {
+        if (!value || numberOrNull(value.x) === null || numberOrNull(value.y) === null ||
+            numberOrNull(value.z) === null) return null;
+        return { x: value.x / 32, y: value.y / 32, z: value.z / 8 };
+    }
+
+    function stationPosition(value) {
+        if (value === null) return { status: "absent", position: null };
+        var position = readPosition(value);
+        if (!position) return { status: "unknown", position: null };
+        // OpenRCT2 may expose a null coordinate sentinel instead of JS null.
+        if (position.x < 0 || position.y < 0 || position.x >= map.size.x || position.y >= map.size.y) {
+            return { status: "absent", position: null };
+        }
+        position.direction = numberOrNull(value.direction);
+        return { status: "present", position: position };
+    }
+
+    function readRideStations(ride) {
+        if (!Array.isArray(ride.stations)) return null;
+        var stations = [];
+        ride.stations.forEach(function (station, index) {
+            var start = stationPosition(station.start);
+            if (start.status === "absent") return;
+            stations.push({ index: index, start: start, length: numberOrNull(station.length),
+                entrance: stationPosition(station.entrance), exit: stationPosition(station.exit) });
+        });
+        return stations;
+    }
+
+    function rideObjectResearch(object, rideTypes) {
+        var research = typeof park !== "undefined" ? park.research : null;
+        return rideTypes.map(function (rideType) {
+            function matches(item) {
+                return item.type === "ride" && item.rideType === rideType && item.object === object.index;
+            }
+            var status = "unknown";
+            if (research && Array.isArray(research.inventedItems) && research.inventedItems.some(matches)) {
+                status = "invented";
+            } else if (research && Array.isArray(research.uninventedItems) && research.uninventedItems.some(matches)) {
+                status = "uninvented";
+            }
+            return { ride_type: rideType, status: status };
+        });
+    }
+
+    function readParkStatus() {
+        var research = park.research;
+        var objective = scenario.objective;
+        return {
+            park_name: park.name, game_mode: context.mode, game_paused: context.paused,
+            game_speed: context.gameSpeed, observed_game_tick: numberOrNull(date.ticksElapsed),
+            date: { day: date.day, month: date.month, year: date.year, months_elapsed: date.monthsElapsed },
+            park: {
+                open: park.getFlag("open"), no_money: park.getFlag("noMoney"),
+                cash_raw: numberOrNull(park.cash), bank_loan_raw: numberOrNull(park.bankLoan),
+                max_bank_loan_raw: numberOrNull(park.maxBankLoan), entrance_fee_raw: numberOrNull(park.entranceFee),
+                rating: numberOrNull(park.rating), guests: numberOrNull(park.guests),
+                value_raw: numberOrNull(park.value), company_value_raw: numberOrNull(park.companyValue)
+            },
+            scenario: { name: scenario.name, status: scenario.status, objective: {
+                type: objective.type, guests: numberOrNull(objective.guests), year: numberOrNull(objective.year),
+                length: numberOrNull(objective.length), excitement_raw: numberOrNull(objective.excitement),
+                park_value_raw: numberOrNull(objective.parkValue), monthly_income_raw: numberOrNull(objective.monthlyIncome)
+            } },
+            research: research ? {
+                funding: numberOrNull(research.funding), priorities: research.priorities,
+                stage: research.stage, progress: numberOrNull(research.progress),
+                invented_count: Array.isArray(research.inventedItems) ? research.inventedItems.length : null,
+                uninvented_count: Array.isArray(research.uninventedItems) ? research.uninventedItems.length : null
+            } : null,
+            limitations: ["Financial and objective values with _raw retain scripting API units.",
+                "Only fields relevant to the objective type should be interpreted as requirements.",
+                "This observes the game status, not a forecast or independent proof of objective completion."]
+        };
+    }
+
+    function readStationAccess(ride, radius) {
+        var stations = readRideStations(ride);
+        var areas = [];
+        var paths = [];
+        var visited = {};
+        (stations || []).forEach(function (station) {
+            [station.start, station.entrance, station.exit].forEach(function (entry) {
+                if (entry.status !== "present") return;
+                var centre = entry.position;
+                var cx = Math.floor(centre.x), cy = Math.floor(centre.y);
+                areas.push({ x: cx, y: cy, radius: radius });
+                for (var x = Math.max(0, cx - radius); x <= Math.min(map.size.x - 1, cx + radius); x++) {
+                    for (var y = Math.max(0, cy - radius); y <= Math.min(map.size.y - 1, cy + radius); y++) {
+                        var key = x + "," + y;
+                        if (visited[key]) continue;
+                        visited[key] = true;
+                        var tile = map.getTile(x, y);
+                        if (!tile) continue;
+                        for (var i = 0; i < tile.numElements; i++) {
+                            var el = tile.elements[i];
+                            if (el.type !== "footpath") continue;
+                            paths.push(pathObservation(el, x, y));
+                        }
+                    }
+                }
+            });
+        });
+        return { ride_id: ride.id, stations: stations, observed_areas: areas, paths: paths,
+            guest_access: "unknown", limitations: [
+                "Path observations are bounded and retain all heights and ghosts.",
+                "Nearby paths do not establish entrance, queue, exit or public-network connectivity.",
+                "No pathfinding or guest access guarantee is provided."] };
+    }
+
+    function pathObservation(el, x, y) {
+        return { x: x, y: y, base_z: el.baseZ / 8, clearance_z: el.clearanceZ / 8,
+            edges: numberOrNull(el.edges), slope_direction: numberOrNull(el.slopeDirection),
+            addition_object: numberOrNull(el.addition),
+            is_queue: typeof el.isQueue === "boolean" ? el.isQueue : null,
+            ride_id: el.isQueue === true ? numberOrNull(el.ride) : null,
+            station: el.isQueue === true ? numberOrNull(el.station) : null,
+            is_ghost: typeof el.isGhost === "boolean" ? el.isGhost : null,
+            surface_object: numberOrNull(el.surfaceObject), railings_object: numberOrNull(el.railingsObject),
+            legacy_object: numberOrNull(el.object) };
+    }
+
+    function validMapPoint(x, y) {
+        return Number.isInteger(x) && Number.isInteger(y) && x >= 0 && y >= 0 && x < map.size.x && y < map.size.y;
+    }
+
+    function readPathArea(x, y, radius) {
+        var paths = [];
+        for (var mx = Math.max(0, x - radius); mx <= Math.min(map.size.x - 1, x + radius); mx++) {
+            for (var my = Math.max(0, y - radius); my <= Math.min(map.size.y - 1, y + radius); my++) {
+                var tile = map.getTile(mx, my);
+                if (!tile) continue;
+                tile.elements.forEach(function (el) {
+                    if (el.type === "footpath") paths.push(pathObservation(el, mx, my));
+                });
+            }
+        }
+        return { x: x, y: y, radius: radius, paths: paths, guest_access: "unknown",
+            limitations: "Bounded path observations at all heights, including ghosts. Adjacency is not public-network or guest-access proof." };
+    }
+
+    function pathActionResponse(params, before, result, callback) {
+        if (!result || result.error) {
+            callback({ success: false, outcome: result ? "rejected" : "unknown",
+                error: gameError(result), error_details: gameErrorDetails(result) });
+            return;
+        }
+        var payload = { cost_raw: numberOrNull(result.cost), observed_before: before, observed_after: null };
+        try { payload.observed_after = readPathArea(params.x, params.y, 1); }
+        catch (error) { payload.state_error = String(error); }
+        callback({ success: true, payload: payload });
     }
 
     /**
@@ -563,13 +754,137 @@ function main() {
                 }, function (result) {
                     if (!result || result.error) {
                         var detail = result && (result.errorMessage || result.errorTitle || result.error);
-                        callback({ success: false, error: "Failed to set ride vehicles: " + (detail || "Unknown error") });
+                        callback({ success: false, outcome: result ? "rejected" : "unknown", error_details: gameErrorDetails(result),
+                            error: "Failed to set ride vehicles: " + (detail || "Unknown error") });
                     } else {
                         callback({ success: true, payload: {
                             ride_id: vehicleParams.rideId, setting: vehicleParams.setting, value: vehicleParams.value
                         } });
                     }
                 });
+                break;
+
+            case "getLoadedRideObjects":
+                if (typeof context.getAllObjects !== "function") {
+                    callback({ success: false, error: "Loaded ride object discovery is unavailable in this scripting API" });
+                    return;
+                }
+                callback({ success: true, payload: context.getAllObjects("ride").map(function (object) {
+                    var rideTypes = object.rideType.filter(function (type, index, all) {
+                        return Number.isInteger(type) && type >= 0 && type < 255 && all.indexOf(type) === index;
+                    });
+                    return { index: object.index, identifier: object.identifier, name: object.name,
+                        ride_types: rideTypes, min_cars_in_train: object.minCarsInTrain,
+                        max_cars_in_train: object.maxCarsInTrain, track_support: "unknown",
+                        research: rideObjectResearch(object, rideTypes) };
+                }) });
+                break;
+
+            case "getParkStatus":
+                if (context.mode !== "normal" || typeof park === "undefined" ||
+                    typeof scenario === "undefined" || typeof date === "undefined") {
+                    callback({ success: false, error: "Load a park in normal game mode before reading park status" });
+                    return;
+                }
+                callback({ success: true, payload: readParkStatus() });
+                break;
+
+            case "getRideStationAccess":
+                var accessParams = request.params;
+                if (!Number.isInteger(accessParams.rideId) || accessParams.rideId < 0 ||
+                    !Number.isInteger(accessParams.radius) || accessParams.radius < 0 || accessParams.radius > 4) {
+                    callback({ success: false, error: "Expected a nonnegative rideId and radius 0-4" });
+                    return;
+                }
+                var accessRide = map.getRide(accessParams.rideId);
+                if (!accessRide) {
+                    callback({ success: false, error: "Ride not found" });
+                    return;
+                }
+                callback({ success: true, payload: readStationAccess(accessRide, accessParams.radius) });
+                break;
+
+            case "getPathObjects":
+                callback({ success: true, payload: {
+                    surfaces: context.getAllObjects("footpath_surface").map(function (obj) {
+                        return { index: obj.index, identifier: obj.identifier, name: obj.name, flags_raw: obj.flags };
+                    }),
+                    railings: context.getAllObjects("footpath_railings").map(function (obj) {
+                        return { index: obj.index, identifier: obj.identifier, name: obj.name };
+                    })
+                } });
+                break;
+
+            case "getPathArea":
+                var pa = request.params;
+                if (!validMapPoint(pa.x, pa.y) || !Number.isInteger(pa.radius) || pa.radius < 0 || pa.radius > 8) {
+                    callback({ success: false, error: "Expected a map tile and radius 0-8" }); return;
+                }
+                callback({ success: true, payload: readPathArea(pa.x, pa.y, pa.radius) });
+                break;
+
+            case "placePathTile":
+            case "removePathTile":
+                var pp = request.params;
+                if (context.mode !== "normal" || !validMapPoint(pp.x, pp.y) ||
+                    !Number.isInteger(pp.z) || pp.z < 0 || pp.z > 254 || pp.z % 2 !== 0) {
+                    callback({ success: false, error: "Expected normal park mode, map tile and even Z height (units of 8)" }); return;
+                }
+                var targetTile = map.getTile(pp.x, pp.y);
+                if (!targetTile) { callback({ success: false, error: "Tile unavailable" }); return; }
+                var beforePaths = readPathArea(pp.x, pp.y, 1);
+                if (request.endpoint === "removePathTile") {
+                    var matching = beforePaths.paths.filter(function (p) {
+                        return p.x === pp.x && p.y === pp.y && p.base_z === pp.z;
+                    });
+                    var selectedPath = matching.length === 1 ? matching[0] : null;
+                    var expected = pp.expected_path;
+                    if (!selectedPath || selectedPath.is_ghost !== false || selectedPath.slope_direction !== null ||
+                        selectedPath.addition_object !== null ||
+                        !expected || Object.keys(expected).length !== Object.keys(selectedPath).length ||
+                        Object.keys(selectedPath).some(function (key) { return expected[key] !== selectedPath[key]; })) {
+                        callback({ success: false, error: "Expected exact current observation of one flat, non-ghost path; target changed or unsupported" }); return;
+                    }
+                    context.executeAction("footpathremove", { x: pp.x * 32, y: pp.y * 32, z: pp.z * 8 }, function (result) {
+                        pathActionResponse(pp, beforePaths, result, callback);
+                    });
+                    return;
+                }
+                var surfaces = targetTile.elements.filter(function (el) { return el.type === "surface"; });
+                if (targetTile.elements.some(function (el) {
+                        return el.type !== "surface" && (el.type !== "track" || el.baseZ < pp.z * 8 + 32);
+                    }) || surfaces.length !== 1 ||
+                    surfaces[0].isGhost || surfaces[0].slope !== 0 || surfaces[0].waterHeight !== 0 || surfaces[0].baseZ !== pp.z * 8) {
+                    callback({ success: false, error: "Only flat, dry ground without existing paths or scenery is supported; overhead track must leave path clearance" }); return;
+                }
+                function loadedIndex(type, index) {
+                    return Number.isInteger(index) && context.getAllObjects(type).some(function (obj) { return obj.index === index; });
+                }
+                if (typeof pp.is_queue !== "boolean" || !loadedIndex("footpath_surface", pp.surface_object) ||
+                    !loadedIndex("footpath_railings", pp.railings_object)) {
+                    callback({ success: false, error: "Choose loaded surface/railings indices and a boolean is_queue" }); return;
+                }
+                context.executeAction("footpathplace", { x: pp.x * 32, y: pp.y * 32, z: pp.z * 8,
+                    direction: 255, object: pp.surface_object, railingsObject: pp.railings_object,
+                    slopeType: 0, slopeDirection: 0, constructFlags: pp.is_queue ? 1 : 0 }, function (result) {
+                    pathActionResponse(pp, beforePaths, result, callback);
+                });
+                break;
+
+            case "savePark":
+                var filename = request.params.filename;
+                if (context.mode !== "normal" || typeof filename !== "string" ||
+                    !/^mcp-[a-zA-Z0-9_-]{1,48}-[a-f0-9]{32}$/.test(filename)) {
+                    callback({ success: false, error: "Expected a fresh MCP checkpoint basename; paths and existing save names are not accepted" }); return;
+                }
+                // saveGame returns void: acknowledgement is not proof of disk persistence.
+                if (checkpointNames[filename]) {
+                    callback({ success: false, error: "Checkpoint basename already requested in this session" }); return;
+                }
+                checkpointNames[filename] = true;
+                context.saveGame({ filename: filename });
+                callback({ success: true, payload: { filename: filename + ".park", save_requested: true,
+                    file_written: "unknown", limitations: "The game save API returns no write result. Verify the file before relying on this checkpoint. Never blindly retry an unknown request." } });
                 break;
 
             case "getPluginInfo":
@@ -580,7 +895,10 @@ function main() {
                     map_size: { x: map.size.x, y: map.size.y },
                     game_paused: context.paused,
                     park_name: typeof park !== "undefined" ? park.name : null,
-                    capabilities: ["coaster_snapshot", "close_ride", "endpoint_removal", "cardinal_geometry"]
+                    capabilities: ["coaster_snapshot", "close_ride", "endpoint_removal", "cardinal_geometry",
+                        "guarded_append", "removal_preview", "track_options_readback", "loaded_ride_objects",
+                        "park_status", "station_access_observations", "ride_object_research", "train_observations", "explicit_ride_reset",
+                        "flat_paths", "open_ride", "checkpoint_request"]
                 } });
                 break;
 
@@ -593,7 +911,8 @@ function main() {
                 context.executeAction("ridedemolish", { ride: deleteRideId, modifyType: 0 }, function (result) {
                     if (!result || result.error) {
                         var detail = result && (result.errorMessage || result.errorTitle || result.error);
-                        callback({ success: false, error: "Failed to delete ride: " + (detail || "Unknown error") });
+                        callback({ success: false, outcome: result ? "rejected" : "unknown", error_details: gameErrorDetails(result),
+                            error: "Failed to delete ride: " + (detail || "Unknown error") });
                     } else {
                         callback({ success: true, payload: { rideId: deleteRideId } });
                     }
@@ -638,8 +957,49 @@ function main() {
                 deleteNext();
                 break;
 
+            case "resetRide":
+                var resetId = request.params.rideId;
+                if (!Number.isInteger(resetId) || resetId < 0) {
+                    callback({ success: false, error: "Expected a nonnegative rideId" });
+                    return;
+                }
+                var resetRide = map.getRide(resetId);
+                if (!resetRide || resetRide.status !== "closed") {
+                    callback({ success: false, error: "Reset requires an existing closed ride",
+                        error_details: { category: "ride_not_closed" } });
+                    return;
+                }
+                if (resetRide.guestCount !== 0) {
+                    callback({ success: false, error: "Reset requires a ride with no guests (or guest count is unknown)",
+                        error_details: { category: "ride_not_empty" } });
+                    return;
+                }
+                // In OpenRCT2 a close action on an already closed ride clears
+                // vehicles for construction. This is explicit, never a retry.
+                context.executeAction("ridesetstatus", { ride: resetId, status: 0 }, function (result) {
+                    if (!result || result.error) {
+                        callback({ success: false, outcome: result ? "rejected" : "unknown",
+                            error: "Ride reset failed: " + gameError(result), error_details: gameErrorDetails(result) });
+                        return;
+                    }
+                    var payload = { ride_id: resetId, vehicles_cleared: null };
+                    try {
+                        var observedRide = map.getRide(resetId);
+                        if (observedRide && Array.isArray(observedRide.vehicles)) {
+                            payload.vehicles_cleared = !observedRide.vehicles.some(function (id) {
+                                return typeof id === "number" && id !== 65535 && map.getEntity(id) !== null;
+                            });
+                        }
+                    } catch (error) {
+                        payload.state_error = String(error);
+                    }
+                    callback({ success: true, payload: payload });
+                });
+                break;
+
             case "closeRide":
             case "startRideTest":
+            case "openRide":
                 if (!request.params || typeof request.params.rideId !== "number") {
                     callback({
                         success: false,
@@ -650,7 +1010,7 @@ function main() {
                 var rideId = request.params.rideId;
                 context.executeAction("ridesetstatus", {
                     ride: rideId,
-                    status: request.endpoint === "closeRide" ? 0 : 2
+                    status: request.endpoint === "closeRide" ? 0 : (request.endpoint === "openRide" ? 1 : 2)
                 }, function (result) {
                     if (!result || (result.error && result.error !== "")) {
                         var details = [];
@@ -659,13 +1019,14 @@ function main() {
                         if (details.length === 0 && result && result.error) details.push(String(result.error));
                         callback({
                             success: false,
-                            error: "Failed to " + (request.endpoint === "closeRide" ? "close ride" : "start ride test") + ": " +
+                            outcome: result ? "rejected" : "unknown", error_details: gameErrorDetails(result),
+                            error: "Failed to " + (request.endpoint === "closeRide" ? "close ride" : (request.endpoint === "openRide" ? "open ride" : "start ride test")) + ": " +
                                 (details.length ? details.join(": ") : "Unknown error")
                         });
                     } else {
                         callback({
                             success: true,
-                            payload: "Ride " + rideId + (request.endpoint === "closeRide" ? " closed." : " started in test mode.")
+                            payload: "Ride " + rideId + (request.endpoint === "closeRide" ? " closed." : (request.endpoint === "openRide" ? " opened." : " started in test mode."))
                         });
                     }
                 });
@@ -704,15 +1065,29 @@ function main() {
                         if (typeof car.nextCarOnTrain !== "number") { car = null; break; }
                         car = map.getEntity(car.nextCarOnTrain);
                     }
+                    var location = vehicle.trackLocation;
+                    var forces = vehicle.gForces;
                     return {
-                        id: id,
-                        velocity: vehicle ? vehicle.velocity : null,
-                        cars: car && car.nextCarOnTrain === null ? cars : null
+                        id: id, velocity: numberOrNull(vehicle.velocity),
+                        cars: car && car.nextCarOnTrain === null ? cars : null,
+                        status: typeof vehicle.status === "string" ? vehicle.status : null,
+                        position: readPosition(vehicle),
+                        track_location: location ? {
+                            x: numberOrNull(location.x / 32), y: numberOrNull(location.y / 32),
+                            z: numberOrNull(location.z / 8), direction: numberOrNull(location.direction),
+                            track_type: numberOrNull(location.trackType)
+                        } : null,
+                        track_progress: numberOrNull(vehicle.trackProgress),
+                        g_forces_raw: forces ? { lateral: numberOrNull(forces.lateralG),
+                            vertical: numberOrNull(forces.verticalG) } : null
                     };
                 });
                 var stats = {
                     ride_status: ride.status,
                     game_paused: context.paused,
+                    observed_game_tick: typeof date !== "undefined" ? numberOrNull(date.ticksElapsed) : null,
+                    total_customers: numberOrNull(ride.totalCustomers),
+                    guest_count: numberOrNull(ride.guestCount),
                     ratings_available: ratingsAvailable,
                     excitement: ratingsAvailable ? ride.excitement / 100 : null,
                     intensity: ratingsAvailable ? ride.intensity / 100 : null,
@@ -733,6 +1108,42 @@ function main() {
                     payload: stats
                 });
                 break;
+
+            case "appendTrackPiece":
+                var appendParams = request.params;
+                if (!Number.isInteger(appendParams.ride)) {
+                    callback({ success: false, error: "Missing or invalid ride ID" });
+                    return;
+                }
+                processRequest({ endpoint: "getCoasterState", params: { rideId: appendParams.ride } }, function (result) {
+                    if (!result.success) { callback(result); return; }
+                    var current = result.payload;
+                    var position = current.position;
+                    if (current.layoutStatus !== "complete" || current.isCircuitComplete || !position ||
+                        current.validPieces.indexOf(appendParams.trackType) === -1) {
+                        callback({ success: false, error: "Track is not an available connection candidate at the current endpoint" });
+                        return;
+                    }
+                    var expected = appendParams.expectedEndpoint;
+                    if (!expected || ["x", "y", "z", "direction"].some(function (axis) {
+                        return expected[axis] !== position[axis];
+                    }) || (appendParams.expectedPieceCount !== undefined &&
+                        appendParams.expectedPieceCount !== current.history.length)) {
+                        callback({ success: false, error: "Construction endpoint changed; inspect before retrying",
+                            error_details: { category: "stale_endpoint", expected: expected, actual: position } });
+                        return;
+                    }
+                    var resolved = {};
+                    Object.keys(appendParams).forEach(function (key) { resolved[key] = appendParams[key]; });
+                    resolved.tileCoordinateX = position.x;
+                    resolved.tileCoordinateY = position.y;
+                    resolved.tileCoordinateZ = position.z;
+                    resolved.direction = position.direction;
+                    resolved.rideType = current.rideType;
+                    resolved.isFromTrackDesign = false;
+                    processRequest({ endpoint: "placeTrackPiece", params: resolved }, callback);
+                });
+                return;
 
             case "queryTrackPiece":
             case "placeTrackPiece":
@@ -820,6 +1231,7 @@ function main() {
                         callback({
                             success: false,
                             outcome: result ? "rejected" : "unknown",
+                            error_details: gameErrorDetails(result),
                             error: errMsg
                         });
                     } else {
@@ -1033,6 +1445,10 @@ function main() {
                         payload.history = historyResult.payload.history;
                         payload.trackElements = historyResult.payload.trackElements;
                         payload.rideType = snapshotRide.type;
+                        payload.rideName = snapshotRide.name || null;
+                        payload.stations = readRideStations(snapshotRide);
+                        payload.rideObject = snapshotRide.object ? { index: snapshotRide.object.index,
+                            identifier: snapshotRide.object.identifier, name: snapshotRide.object.name } : null;
                         payload.layoutStatus = snapshotState ? snapshotState.layoutStatus : "empty";
                         callback({ success: true, payload: payload });
                     }, snapshotState);
@@ -1124,6 +1540,7 @@ function main() {
                     payload: {
                         validPieces: validPieces,
                         candidateStatus: candidateStatus,
+                        pieceCount: state.history.length,
                         validPieceEndpoints: buildValidPieceEndpoints(buildPosition, validPieces),
                         lastTrackType: lastPiece.trackType,
                         stateCategory: stateCategory,
@@ -1250,7 +1667,7 @@ function main() {
                     var stationDirection = stationTile.direction;
 
                     // Calculate positions for entrance and exit based on station direction
-                    // Direction: 0=west, 1=north, 2=east, 3=south
+                    // Direction: 0=west, 1=+y, 2=east, 3=-y
                     var entranceX, entranceY, exitX, exitY;
                     var entranceDir, exitDir;
 
@@ -1261,8 +1678,8 @@ function main() {
                         entranceY = stationTile.y - 1; // North of station
                         exitX = stationTile.x;
                         exitY = stationTile.y + 1; // South of station
-                        entranceDir = 3; // Face south (towards station)
-                        exitDir = 1; // Face north (away from station)
+                        entranceDir = 1; // Face +y, towards station
+                        exitDir = 3; // Face -y, towards station
                     } else {
                         // Track runs north-south, place entrance/exit east-west
                         entranceX = stationTile.x - 1; // West of station
@@ -1330,6 +1747,7 @@ function main() {
                 tryPlaceForPiece(0);
                 break;
 
+            case "previewTrackRemoval":
             case "deleteLastTrackPiece":
                 // This endpoint only removes track pieces, not entrances/exits
                 // Entrances/exits must be managed separately
@@ -1383,6 +1801,26 @@ function main() {
                 }
                 var removeZ = removeElement.baseZ;
 
+                var removalTarget = { x: lastPiece.x, y: lastPiece.y, z: lastPiece.z,
+                    direction: lastPiece.direction, track_type: lastPiece.trackType, base_z_game: removeZ,
+                    piece_count: state.history.length };
+                if (request.params.expectedTarget) {
+                    // Compare fields, not incoming JSON key order.
+                    var expectedTarget = request.params.expectedTarget;
+                    if (Object.keys(removalTarget).some(function (key) { return expectedTarget[key] !== removalTarget[key]; })) {
+                        callback({ success: false, error: "Removal target changed; inspect before removing",
+                            error_details: { category: "stale_removal_target", actual: removalTarget } });
+                        return;
+                    }
+                }
+                if (request.endpoint === "previewTrackRemoval") {
+                    callback({ success: true, payload: { target: removalTarget,
+                        pieces_remaining: state.history.length - 1,
+                        was_circuit_complete: state.isComplete,
+                        limitations: "Selection preview only, not a game permission/clearance query or reservation" } });
+                    return;
+                }
+
                 console.log("Attempting to remove track piece at tile:", lastPiece.x, lastPiece.y,
                             "trackType:", lastPiece.trackType, "z:", removeZ);
 
@@ -1400,6 +1838,7 @@ function main() {
                         callback({
                             success: false,
                             outcome: result ? "rejected" : "unknown",
+                            error_details: gameErrorDetails(result),
                             error: "Failed to remove track piece: " + gameError(result)
                         });
                     } else {
@@ -1460,17 +1899,19 @@ function main() {
                     inspectionInterval: request.params.inspectionInterval,
                 };
                 context.executeAction("ridecreate", rideCreateArgs, function (result) {
-                    if (result && typeof result.ride === "number") {
+                    if (result && !result.error && Number.isInteger(result.ride) && result.ride >= 0 && result.ride < 65535) {
                         var rideId = result.ride;
                         var requestedName = request.params.name;
                         if (typeof requestedName === "string" && requestedName.trim() !== "") {
                             // ridecreate always assigns a default name; apply the
                             // requested one separately.
-                            context.executeAction("ridesetname", { ride: rideId, name: requestedName }, function () {
-                                callback({
-                                    success: true,
-                                    payload: { rideId: rideId }
-                                });
+                            context.executeAction("ridesetname", { ride: rideId, name: requestedName }, function (nameResult) {
+                                var createdPayload = { rideId: rideId };
+                                if (!nameResult || nameResult.error) {
+                                    createdPayload.nameWarning = "Ride created, but naming was not confirmed: " + gameError(nameResult);
+                                    createdPayload.nameOutcome = nameResult ? "rejected" : "unknown";
+                                }
+                                callback({ success: true, payload: createdPayload });
                             });
                         } else {
                             callback({
@@ -1481,7 +1922,9 @@ function main() {
                     } else {
                         callback({
                             success: false,
-                            error: "Failed to create ride: " + (result && result.error ? result.error : "Unknown error")
+                            outcome: result && result.error ? "rejected" : "unknown",
+                            error_details: gameErrorDetails(result),
+                            error: "Failed to create ride: " + gameError(result)
                         });
                     }
                 });
@@ -1525,6 +1968,7 @@ registerPlugin({
     authors: ["Markus", "Milan Boers"],
     type: "intransient",
     licence: "MIT",
+    minApiVersion: 124,
     targetApiVersion: 103,
     main: main
 });

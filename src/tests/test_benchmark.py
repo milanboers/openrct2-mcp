@@ -16,6 +16,7 @@ def state():
     return {
         'success': True, 'ride_id': 7, 'ride_type': 52, 'piece_count': 42,
         'layout_status': 'complete', 'is_circuit_complete': True,
+        'stations': [{'entrance': {'status': 'present'}, 'exit': {'status': 'present'}}],
         'track_elements': [{'x': 20, 'y': 20, 'z': 14}, {'x': 125, 'y': 125, 'z': 14}],
     }
 
@@ -110,7 +111,7 @@ def test_missing_stats_never_count_as_operational(state):
 
 
 @pytest.mark.parametrize('change', [
-    {'schema_version': 2},
+    {'schema_version': 3},
     {'criteria': {'ride_type': 52, 'footprint_bounds': {'min_x': 10, 'max_x': 5, 'min_y': 0, 'max_y': 1}}},
     {'criteria': {'ride_type': 52.5, 'footprint_bounds': {'min_x': 0, 'max_x': 5, 'min_y': 0, 'max_y': 1}}},
     {'criteria': {'ride_type': 52, 'footprint_bounds': {'min_x': 0, 'max_x': 5, 'min_y': 0, 'max_y': 1},
@@ -121,3 +122,25 @@ def test_invalid_briefs_fail_instead_of_silently_dropping_requirements(change):
 
     with pytest.raises(ValidationError):
         BenchmarkBrief.model_validate({**deepcopy(original), **change})
+
+
+@pytest.mark.parametrize('stations', [None, [], [{'entrance': {'status': 'unknown'}, 'exit': {'status': 'absent'}}]])
+def test_station_building_requirements_do_not_pass_missing_or_unknown_evidence(state, stats, stations):
+    brief = BenchmarkBrief.model_validate_json((BRIEFS / 'working-coaster.json').read_text())
+
+    report = evaluate_ride(brief, {**state, 'stations': stations}, [stats])
+
+    assert [check['name'] for check in report['checks'] if not check['passed']] == [
+        'station_entrances_present', 'station_exits_present',
+    ]
+
+
+def test_legacy_brief_can_still_score_without_station_evidence(state, stats):
+    brief = BenchmarkBrief.model_validate_json((BRIEFS / 'working-coaster.json').read_text())
+    legacy = brief.model_dump()
+    legacy['schema_version'] = 1
+    legacy['criteria'].pop('require_station_buildings')
+
+    report = evaluate_ride(BenchmarkBrief.model_validate(legacy), {**state, 'stations': None}, [stats])
+
+    assert report['passed'] is True

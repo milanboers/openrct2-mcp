@@ -26,13 +26,15 @@ class ReadOnlyClient:
         self.changed = changed
         self.state_reads = 0
 
-    async def call_tool(self, name, arguments):
+    async def call_tool(self, name, arguments, **kwargs):
         assert name in ('get_plugin_info', 'get_coaster_state', 'get_ride_stats')
         self.calls.append((name, arguments))
         state = {
             'success': True, 'ride_id': 7, 'ride_type': 52, 'piece_count': 42,
             'layout_status': 'complete', 'is_circuit_complete': True,
+            'stations': [{'entrance': {'status': 'present'}, 'exit': {'status': 'present'}}],
             'track_elements': [{'x': 67, 'y': 66, 'z': 14}],
+            'pieces': [{'index': 0, 'trackType': 'EndStation'}],
         }
         responses = {
             'get_plugin_info': {'matches': True, 'protocol_compatible': True, 'park_name': self.park_name},
@@ -91,7 +93,7 @@ def test_cli_writes_a_new_report_with_explicit_agent_label(tmp_path, passed, exi
 
     assert result == exit_code
     assert json.loads(output.read_text()) == {**report, 'agent_label': 'manual-run'}
-    run.assert_awaited_once_with(BRIEF, 7, 10)
+    run.assert_awaited_once_with(BRIEF, 7, 10, None)
 
 
 def test_cli_never_overwrites_an_existing_report(tmp_path):
@@ -105,3 +107,69 @@ def test_cli_never_overwrites_an_existing_report(tmp_path):
     assert failure.value.code == 2
     assert output.read_text() == 'previous result'
     run.assert_not_awaited()
+
+
+def test_cli_attaches_explicit_process_metrics_without_claiming_agent_ownership(tmp_path):
+    output = tmp_path / 'result.json'
+    metrics = {'tool_calls': 5, 'rejected_placement_requests': 1, 'limitations': 'Counts cover the server process'}
+    report = {'passed': True, 'measurements': {'agent_tool_calls': None, 'rejected_placements': None},
+              'limitations': ['Agent tool-call counts and rejected placements are not collected', 'Other limits']}
+    arguments = ['evaluate_ride.py', '--brief', str(ROOT / 'benchmarks' / 'working-coaster.json'), '--ride-id', '7',
+                 '--metrics-file', str(tmp_path / 'metrics.jsonl'), '--output', str(output)]
+    with patch('sys.argv', arguments), patch.object(evaluator, 'run', AsyncMock(return_value=deepcopy(report))), \
+         patch.object(evaluator, 'summarize_metrics', return_value=metrics) as summarize:
+        result = evaluator.main()
+
+    document = json.loads(output.read_text())
+    assert result == 0
+    assert document['agent_label'] is None
+    assert document['agent_metrics'] == metrics
+    assert document['measurements'] == {'agent_tool_calls': 5, 'rejected_placements': 1}
+    assert document['limitations'] == ['Other limits', 'Counts cover the server process']
+    summarize.assert_called_once_with(tmp_path / 'metrics.jsonl', allow_incomplete=False)
+
+
+@pytest.fixture
+def setup():
+    from openrct2_mcp.trials import TrialSetup
+
+    return TrialSetup(
+        schema_version=1, run_kind='trial_setup', fixture_id='unit-trial', prepared_at='2026-11-03',
+        ride_id=7, created_ride_ids=[6, 7], brief=BRIEF, plugin={},
+        initial_state={'ride_id': 7, 'pieces': [{'index': 0, 'trackType': 'EndStation'}]},
+        protected_prefix_pieces=1, protected_rides=[{'success': True, 'ride_id': 6, 'pieces': [{'index': 0}]}],
+        initial_stats_samples=[], limitations=[],
+    )
+
+
+@pytest.mark.parametrize(('protected_response', 'passed'), [
+    ({'success': True, 'ride_id': 6, 'pieces': [{'index': 0}]}, True),
+    ({'success': False, 'error': 'Ride not found'}, False),
+])
+def test_collection_scores_registered_protection_and_retains_missing_obstacle_evidence(setup, protected_response, passed):
+    client = ReadOnlyClient()
+    original_call = client.call_tool
+
+    async def respond(name, arguments, **kwargs):
+        if name == 'get_coaster_state' and arguments['ride_id'] == 6:
+            return SimpleNamespace(is_error=False, content=[SimpleNamespace(type='text', text=json.dumps(protected_response))])
+        return await original_call(name, arguments, **kwargs)
+
+    client.call_tool = AsyncMock(side_effect=respond)
+
+    report = asyncio.run(evaluator.collect(client, BRIEF, 7, 0, setup))
+
+    assert report['passed'] is passed
+    assert report['checks'][-2]['passed'] is True
+    assert report['checks'][-1]['passed'] is passed
+    assert report['trial_setup'] == setup.model_dump()
+    assert client.call_tool.await_count == 6
+
+
+def test_collection_refuses_a_setup_for_another_target_before_reading_the_game(setup):
+    client = ReadOnlyClient()
+
+    with pytest.raises(ValueError, match='does not match'):
+        asyncio.run(evaluator.collect(client, BRIEF, 8, 0, setup))
+
+    assert client.calls == []

@@ -1,15 +1,27 @@
-"""FastMCP server for Roller Coaster ride creation (Stateless & Coordinate-Free)."""
+"""MCP tools for inspecting, constructing and testing OpenRCT2 coasters."""
 
+import argparse
+from contextlib import ExitStack
 import logging
-import io
-from typing import Any, Literal, Optional, Tuple
+import os
+from pathlib import Path
+import time
+from typing import Annotated, Any, Literal, Optional, Tuple
 from fastmcp import FastMCP
 from fastmcp.utilities.types import Image as MCPImage
-from PIL import Image, ImageDraw
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from .api_client import OpenRCT2API, APIError
-from .visualization import draw_heading, elevation_samples, render_elevation_view, render_endpoint_view
+from .catalog import TRACK_TYPES, TRACK_NAME_TO_ID, RIDE_TYPES
+from .models import Endpoint, RemovalTarget, TrackSegment
+from .inspection import compact_map_area, test_report
+from .metrics import ResultMiddleware
+from .park_tools import register_park_tools
+from .protocol import PLUGIN_VERSION, PROTOCOL_VERSION
+from .results import mutation_failure, mutation_status
+from .visualization import (
+    elevation_samples, generate_coaster_image, generate_height_map, render_elevation_view, render_endpoint_view,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -17,65 +29,11 @@ logger = logging.getLogger(__name__)
 
 # Initialize MCP server
 mcp = FastMCP("Roller Coaster Creator")
+result_middleware = ResultMiddleware()
+mcp.add_middleware(result_middleware)
 
 # Initialize API client
 api_client = OpenRCT2API()
-
-
-# Track Type Mapping
-TRACK_TYPES = {
-    0: "Flat",
-    1: "EndStation",
-    2: "BeginStation",
-    3: "MiddleStation",
-    4: "Up25",
-    5: "Up60",
-    10: "Down25",
-    11: "Down60",
-    6: "FlatToUp25",
-    7: "Up25ToUp60",
-    8: "Up60ToUp25",
-    9: "Up25ToFlat",
-    12: "FlatToDown25",
-    13: "Down25ToDown60",
-    14: "Down60ToDown25",
-    15: "Down25ToFlat",
-    16: "LeftQuarterTurn5Tiles",
-    17: "RightQuarterTurn5Tiles",
-    42: "LeftQuarterTurn3Tiles",
-    43: "RightQuarterTurn3Tiles",
-    18: "FlatToLeftBank",
-    19: "FlatToRightBank",
-    20: "LeftBankToFlat",
-    21: "RightBankToFlat",
-    32: "LeftBank",
-    33: "RightBank",
-    22: "BankedLeftQuarterTurn5Tiles",
-    23: "BankedRightQuarterTurn5Tiles",
-    44: "LeftBankedQuarterTurn3Tiles",
-    45: "RightBankedQuarterTurn3Tiles",
-    99: "Brakes",
-}
-
-# Reverse mapping for input
-TRACK_NAME_TO_ID = {v: k for k, v in TRACK_TYPES.items()}
-
-# Ride type IDs -> names. The plugin's track validation is tuned for the
-# Wooden Roller Coaster (52); other types may not place correctly.
-RIDE_TYPES = {
-    0: "Spiral Roller Coaster",
-    1: "Stand-up Roller Coaster",
-    3: "Inverted Roller Coaster",
-    13: "Bobsleigh Coaster",
-    15: "Looping Roller Coaster",
-    17: "Mine Train Coaster",
-    19: "Corkscrew Roller Coaster",
-    44: "Vertical Drop Roller Coaster",
-    51: "Twister Roller Coaster",
-    52: "Wooden Roller Coaster",
-    54: "Steel Wild Mouse",
-    57: "Flying Roller Coaster",
-}
 
 
 def _get_ride_type(ride_id: int) -> int:
@@ -83,187 +41,13 @@ def _get_ride_type(ride_id: int) -> int:
     try:
         rides = api_client.list_all_rides()
     except APIError as e:
-        raise APIError(f"Cannot determine ride type: {e}") from e
+        raise APIError(f"Cannot determine ride type: {e}", details=e.details) from e
     for ride in rides:
         if ride.get("id") == ride_id:
             if not isinstance(ride.get("type"), int):
                 raise APIError(f"Ride {ride_id} has no valid ride type")
             return ride["type"]
     raise APIError(f"Ride {ride_id} not found")
-
-
-def generate_coaster_image(
-    history: list[dict[str, Any]], next_endpoint: dict[str, Any],
-    track_elements: Optional[list[dict[str, Any]]] = None,
-) -> MCPImage:
-    """
-    Generate a visual top-down representation of the coaster as an MCP ImageContent.
-    """
-    if not history:
-        # Return a simple empty image
-        img = Image.new("RGB", (100, 100), color=(255, 255, 255))
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        return MCPImage(data=buf.getvalue(), format="png")
-
-    points = []
-    for p in history:
-        points.append((p["x"], p["y"], p["z"], "P"))
-    if next_endpoint and "x" in next_endpoint:
-        points.append((next_endpoint["x"], next_endpoint["y"], next_endpoint["z"], "C"))
-
-    bounds = points + [(e["x"], e["y"], e["z"], "T") for e in track_elements or []]
-    min_x = min(p[0] for p in bounds)
-    max_x = max(p[0] for p in bounds)
-    min_y = min(p[1] for p in bounds)
-    max_y = max(p[1] for p in bounds)
-
-    padding = 2
-    min_x -= padding
-    max_x += padding
-    min_y -= padding
-    max_y += padding
-
-    tile_size = min(40, 1600 / max(max_x - min_x + 1, max_y - min_y + 1))
-    width = max(1, round((max_x - min_x + 1) * tile_size))
-    height = max(1, round((max_y - min_y + 1) * tile_size))
-
-    img_main = Image.new("RGB", (width, height), color=(40, 40, 40))
-    draw = ImageDraw.Draw(img_main)
-
-    # Function to convert tile coords to pixel coords in image (center of tile)
-    def to_img_center(tx: int, ty: int) -> tuple[float, float]:
-        return (
-            (tx - min_x) * tile_size + tile_size // 2,
-            (ty - min_y) * tile_size + tile_size // 2,
-        )
-
-    def to_img_topleft(tx: int, ty: int) -> tuple[float, float]:
-        return (tx - min_x) * tile_size, (ty - min_y) * tile_size
-
-    # Draw grid
-    for x in range(min_x, max_x + 1):
-        ix, _ = to_img_topleft(x, 0)
-        draw.line([(ix, 0), (ix, height)], fill=(60, 60, 60))
-    for y in range(min_y, max_y + 1):
-        _, iy = to_img_topleft(0, y)
-        draw.line([(0, iy), (width, iy)], fill=(60, 60, 60))
-
-    # Actual track-element tiles are a footprint, not collision clearance.
-    for element in track_elements or []:
-        ix, iy = to_img_topleft(element["x"], element["y"])
-        inset = min(2, tile_size / 4)
-        draw.rectangle([ix + inset, iy + inset, ix + tile_size - inset, iy + tile_size - inset], fill=(70, 70, 90))
-
-    # Determine height range for color scaling
-    min_z_val = min(p[2] for p in points)
-    max_z_val = max(p[2] for p in points)
-    z_range = max(1, max_z_val - min_z_val)
-
-    def get_color(z: int) -> tuple[int, int, int]:
-        z_norm = (z - min_z_val) / z_range
-        return (
-            int(255 * z_norm),
-            int(255 * (1 - z_norm)),
-            int(255 * (1 - abs(0.5 - z_norm) * 2)),
-        )
-
-    # 1. Draw connecting lines first (the track itself)
-    for i in range(len(points) - 1):
-        p1 = points[i]
-        p2 = points[i + 1]
-        c1 = to_img_center(p1[0], p1[1])
-        c2 = to_img_center(p2[0], p2[1])
-
-        # Curved pieces need more than a straight line between tile origins.
-        # Approximate their centreline using the entry and exit directions;
-        # this is not an exact track footprint.
-        piece = history[i] if i < len(history) else {}
-        turn_types = {16, 17, 22, 23, 42, 43, 44, 45}
-        line = [c1, c2]
-        if piece.get("trackType") in turn_types and "nextDirection" in piece:
-            directions = [(-1, 0), (0, 1), (1, 0), (0, -1)]
-            start_direction = directions[piece["direction"] % 4]
-            end_direction = directions[piece["nextDirection"] % 4]
-            distance = max(abs(c2[0] - c1[0]), abs(c2[1] - c1[1])) * 0.55
-            control1 = (c1[0] + start_direction[0] * distance, c1[1] + start_direction[1] * distance)
-            control2 = (c2[0] - end_direction[0] * distance, c2[1] - end_direction[1] * distance)
-            line = []
-            for step in range(21):
-                t = step / 20
-                u = 1 - t
-                line.append(tuple(round(u**3 * c1[j] + 3 * u**2 * t * control1[j]
-                                        + 3 * u * t**2 * control2[j] + t**3 * c2[j]) for j in (0, 1)))
-        draw.line(line, fill=get_color(p1[2]), width=12)
-        draw.line(line, fill=(200, 200, 200), width=2)
-
-    # 2. Draw nodes (boxes) on top
-    for i, (px, py, pz, ptype) in enumerate(points):
-        ix, iy = to_img_topleft(px, py)
-        color = get_color(pz)
-
-        # Border color
-        outline = (255, 255, 255) if ptype == "C" else (150, 150, 150)
-        if i == 0:
-            outline = (0, 255, 0)  # Green for start
-
-        # Draw a small box for the node
-        box_size = min(10, tile_size / 4)
-        cx, cy = to_img_center(px, py)
-        draw.rectangle(
-            [cx - box_size, cy - box_size, cx + box_size, cy + box_size],
-            fill=color,
-            outline=outline,
-            width=2,
-        )
-
-        # Label with height (offset so it doesn't overlap the line)
-        label = f"{pz}"
-        if i == 0:
-            label = f"S:{pz}"
-        elif ptype == "C":
-            label = f"C:{pz}"
-
-        if tile_size >= 16:
-            draw.text((ix + 2, iy + 2), label, fill=(255, 255, 255))
-
-    draw_heading(draw, to_img_center(history[0]["x"], history[0]["y"]),
-                 history[0]["direction"], (90, 240, 150), min(24, tile_size * 0.6))
-    if next_endpoint and "direction" in next_endpoint:
-        draw_heading(draw, to_img_center(next_endpoint["x"], next_endpoint["y"]),
-                     next_endpoint["direction"], (255, 220, 70), min(24, tile_size * 0.6))
-
-    buf_final = io.BytesIO()
-    img_main.save(buf_final, format="PNG")
-    return MCPImage(data=buf_final.getvalue(), format="png")
-
-
-def generate_height_map(track_elements: Optional[list[dict[str, Any]]]) -> str:
-    """Show actual track-element base heights, not collision clearance."""
-    if track_elements is None:
-        return "Track occupancy unavailable: update the OpenRCT2 plugin."
-    if not track_elements:
-        return "No track elements."
-
-    grid: dict[tuple[int, int], set[float]] = {}
-    for element in track_elements:
-        grid.setdefault((element["x"], element["y"]), set()).add(element["z"])
-    min_x = min(x for x, _ in grid)
-    max_x = max(x for x, _ in grid)
-    min_y = min(y for _, y in grid)
-    max_y = max(y for _, y in grid)
-    if (max_x - min_x + 1) * (max_y - min_y + 1) > 4096:
-        return "Track occupancy grid omitted (over 4096 tiles). Use track_elements or get_map_area."
-    labels = {key: "/".join(f"{z:g}" for z in sorted(heights)) for key, heights in grid.items()}
-    width = max(4, max(len(label) for label in labels.values()) + 1, len(str(min_x)) + 1, len(str(max_x)) + 1)
-    lines = ["Track-element base heights (not collision clearance):"]
-    lines.append(" " * 5 + "".join(f"{x:>{width}}" for x in range(min_x, max_x + 1)))
-    lines.append(" " * 5 + "-" * (width * (max_x - min_x + 1)))
-    for y in range(min_y, max_y + 1):
-        row = [f"{y:3} |"]
-        row.extend(f"{labels.get((x, y), '.'):>{width}}" for x in range(min_x, max_x + 1))
-        lines.append("".join(row))
-    return "\n".join(lines)
 
 
 def format_coaster_state(
@@ -304,6 +88,8 @@ def format_coaster_state(
                     p["trackType"], f"Unknown({p['trackType']})"
                 ),
                 "distance": distance,
+                "track_type_id": p["trackType"],
+                "options": p.get("options"),
             }
         )
 
@@ -343,6 +129,9 @@ def format_coaster_state(
         "ride_id": ride_id,
         "ride_type": ride_type,
         "ride_type_name": ride_type_name,
+        "name": api_payload.get("rideName"),
+        "ride_object": api_payload.get("rideObject"),
+        "stations": api_payload.get("stations"),
         "pieces": formatted_pieces,
         "current_endpoint": next_endpoint,
         "valid_pieces": valid_pieces,
@@ -360,15 +149,28 @@ def format_coaster_state(
     return (state_dict, coaster_image)
 
 
-def _mutation_state(ride_id: int, outcome: str = "confirmed", error: Optional[str] = None) -> Any:
-    state = get_coaster_state(ride_id)
-    summary = state[0] if isinstance(state, list) else state
-    if not summary.get("success"):
+def _mutation_state(
+    ride_id: int, outcome: str = "confirmed", error: Optional[str] = None, *,
+    include_image: bool = True, compact: bool = False, confirmed_steps: int = 0,
+    error_details: Optional[dict[str, Any]] = None,
+) -> Any:
+    try:
+        state = get_coaster_state(ride_id, include_image=include_image, compact=compact)
+        summary = state[0] if isinstance(state, list) else state
+        available = bool(summary.get("success"))
+    except Exception as inspection_error:
+        # A rendering/formatting failure must not erase an acknowledged action.
+        logger.exception("Post-mutation inspection failed for ride %s", ride_id)
+        state = summary = {"success": False, "ride_id": ride_id, "error": str(inspection_error)}
+        available = False
+    if not available:
         summary["state_error"] = summary.get("error")
-    summary["operation_outcome"] = outcome
+    summary.update(mutation_status(outcome, confirmed_steps=confirmed_steps, state_available=available))
     if error is not None:
         summary["success"] = False
         summary["error_message"] = error
+    if error_details:
+        summary["error_details"] = error_details
     return state
 
 
@@ -380,6 +182,9 @@ def create_ride(
     station_y: int = 66,
     station_z: int = 14,
     direction: int = 0,
+    ride_object: int = 65535,
+    include_image: bool = True,
+    compact: bool = False,
 ) -> Any:
     """
     Create a new roller coaster ride and place the first station piece.
@@ -390,11 +195,15 @@ def create_ride(
     """
     ride_id: Optional[int] = None
     try:
+        if ride_object != 65535:
+            objects = api_client.get_loaded_ride_objects()
+            if not any(obj["index"] == ride_object and ride_type in obj["ride_types"] for obj in objects):
+                raise APIError("Selected ride object is not loaded for this ride type")
         # 1. Create the ride via API
         result = api_client.create_ride(
             ride_type=ride_type,
             # Let OpenRCT2 choose a compatible loaded vehicle object.
-            ride_object=65535,
+            ride_object=ride_object,
             entrance_object=0,
             colour1=0,
             colour2=0,
@@ -416,7 +225,13 @@ def create_ride(
         )
 
         # 3. Get the initial state
-        state = _mutation_state(ride_id)
+        state = _mutation_state(ride_id, include_image=include_image, compact=compact)
+        if result.get("nameWarning"):
+            summary = state[0] if isinstance(state, list) else state
+            summary["success"] = False
+            summary["execution_status"] = "partial"
+            summary["name_outcome"] = result.get("nameOutcome", "unknown")
+            summary["error_message"] = result["nameWarning"]
         mismatch = placement.get("endpointPredictionMismatch")
         if isinstance(mismatch, dict):
             summary = state[0] if isinstance(state, list) else state
@@ -425,7 +240,7 @@ def create_ride(
 
     except APIError as e:
         logger.error(f"API error creating ride: {e}")
-        failure: dict[str, Any] = {"success": False, "error": str(e), "operation_outcome": e.outcome}
+        failure = mutation_failure(e, ride_id=ride_id, confirmed_steps=int(ride_id is not None))
         if ride_id is not None:
             failure["ride_id"] = ride_id
             failure["message"] = (
@@ -435,26 +250,18 @@ def create_ride(
         return failure
 
 
-class TrackSegment(BaseModel):
-    """A single track piece and its placement options."""
-
-    track_type: str
-    has_chain_lift: bool = False
-    brake_speed: int = 0
-    seat_rotation: int = 0
-
-
 class InvalidTrackType(APIError):
     pass
 
 
 def _place_track_segment(
-    ride_id: int, ride_type: int, segment: TrackSegment, *, query: bool = False
+    ride_id: int, ride_type: int, segment: TrackSegment, *, query: bool = False,
+    expected_endpoint: Optional[Endpoint] = None,
 ) -> dict[str, Any]:
     try:
         state = api_client.get_valid_next_pieces(ride_id)
     except APIError as e:
-        raise APIError(f"Cannot read construction endpoint: {e}") from e
+        raise APIError(f"Cannot read construction endpoint: {e}", details=e.details) from e
     if state.get("isCircuitComplete"):
         raise APIError("Circuit is already complete")
     track_id = TRACK_NAME_TO_ID.get(segment.track_type)
@@ -463,7 +270,13 @@ def _place_track_segment(
     position = state.get("position")
     if not position:
         raise APIError("Game did not return a track placement position")
-    options = {"query": True} if query else {}
+    if expected_endpoint is not None and any(
+        position.get(axis) != value for axis, value in expected_endpoint.model_dump().items()
+    ):
+        raise APIError("Construction endpoint changed; inspect before retrying", details={"category": "stale_endpoint"})
+    options = {"query": True} if query else {
+        "expected_endpoint": position, "expected_piece_count": state.get("pieceCount"),
+    }
     return api_client.place_track_piece(
         ride_id=ride_id,
         tile_coordinate_x=position["x"],
@@ -481,8 +294,9 @@ def _place_track_segment(
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
 def check_track_segment(
-    ride_id: int, track_type: str, brake_speed: int = 0,
-    seat_rotation: int = 0, has_chain_lift: bool = False,
+    ride_id: int, track_type: str,
+    brake_speed: Annotated[int, Field(ge=0, le=255)] = 0,
+    seat_rotation: Annotated[int, Field(ge=0, le=255)] = 0, has_chain_lift: bool = False,
 ) -> dict[str, Any]:
     """Query whether a compatible piece can be placed at the current endpoint.
 
@@ -496,6 +310,46 @@ def check_track_segment(
         return _place_track_segment(ride_id, _get_ride_type(ride_id), segment, query=True)
     except APIError as e:
         return {"success": False, "error": str(e)}
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
+def check_track_candidates(
+    ride_id: int, candidates: list[TrackSegment] = Field(min_length=1, max_length=32),
+) -> dict[str, Any]:
+    """Query 1-32 independent alternatives at one observed endpoint, not a sequence.
+
+    Each candidate uses the same starting position. No pieces are placed.
+    A changed layout invalidates the batch. Queries are not reservations or
+    proof of ride-specific support; each item reports its own query result.
+    """
+    try:
+        state = api_client.get_coaster_state(ride_id)
+        if state.get("isCircuitComplete"):
+            raise APIError("Circuit is already complete")
+        position = state.get("position")
+        if not position or state.get("layoutStatus") != "complete":
+            raise APIError("Candidate queries require a complete connected traversal and an endpoint")
+        results = []
+        for candidate in candidates:
+            track_id = TRACK_NAME_TO_ID.get(candidate.track_type)
+            if track_id not in state.get("validPieces", []):
+                results.append({"candidate": candidate.model_dump(), "success": False,
+                                "error": "Not a supported connection-compatible candidate"})
+                continue
+            result = api_client.place_track_piece(
+                ride_id=ride_id, ride_type=state["rideType"], track_type=track_id,
+                tile_coordinate_x=position["x"], tile_coordinate_y=position["y"],
+                tile_coordinate_z=position["z"], direction=position["direction"],
+                brake_speed=candidate.brake_speed, seat_rotation=candidate.seat_rotation,
+                has_chain_lift=candidate.has_chain_lift, query=True,
+            )
+            results.append({"candidate": candidate.model_dump(), "success": True, **result})
+        if api_client.get_coaster_state(ride_id) != state:
+            raise APIError("Ride layout changed during queries; discard these results and query again")
+        return {"success": True, "ride_id": ride_id, "endpoint": position, "results": results,
+                "limitations": "Independent current-park queries, not a sequence preview or reservation"}
+    except APIError as error:
+        return {"success": False, "ride_id": ride_id, "error": str(error)}
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
@@ -513,7 +367,7 @@ def get_map_area(x: int, y: int, radius: int = 4) -> dict[str, Any]:
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
 def get_coaster_view(
-    ride_id: int, view: Literal["endpoint", "elevation"] = "endpoint", radius: int = 4,
+    ride_id: int, view: Literal["endpoint", "elevation"] = "endpoint", radius: int = 4, compact: bool = False,
 ) -> Any:
     """Inspect terrain/objects around the endpoint, or a track elevation profile.
 
@@ -522,6 +376,8 @@ def get_coaster_view(
     is 0-8 tiles. Elevation uses equally spaced track-piece boundaries, not track
     length, and omits within-piece geometry. The first height is the track origin.
     Green indicates the track start/return heading, yellow the current endpoint.
+    compact=True summarizes repeated flat, dry terrain in endpoint text, keeping
+    all other elements and heights. It does not change the image or elevation view.
     """
     if view not in ("endpoint", "elevation") or not 0 <= radius <= 8:
         return {"success": False, "ride_id": ride_id, "error": "Expected endpoint/elevation view and radius 0-8"}
@@ -542,12 +398,19 @@ def get_coaster_view(
         }
         if view == "endpoint":
             area = api_client.get_map_area(endpoint["x"], endpoint["y"], radius)
-            summary["map_area"] = area
+            summary["map_area"] = compact_map_area(area) if compact else area
             summary["limitations"] = (
                 "All object heights are included, not just the endpoint height. Terrain labels are base Z, "
                 "not slope clearance. Ghost objects are omitted from the image but retained in map_area. "
                 "Ride and map reads are separate; the park may change between them."
             )
+            if compact:
+                summary["limitations"] += (
+                    " Compact map_area summarizes the most common flat, dry, non-ghost surface; "
+                    "matching surfaces and tiles left empty are omitted. All other elements retain "
+                    "their coordinates and heights. Use compact=False for exact omitted terrain locations. "
+                    "Neither mode establishes clearance."
+                )
             image = render_endpoint_view(area, ride_id, endpoint, start)
         else:
             samples = elevation_samples(history)
@@ -569,9 +432,12 @@ def get_coaster_view(
 def place_track_segment(
     ride_id: int,
     track_type: str,
-    brake_speed: int = 0,
-    seat_rotation: int = 0,
+    brake_speed: Annotated[int, Field(ge=0, le=255)] = 0,
+    seat_rotation: Annotated[int, Field(ge=0, le=255)] = 0,
     has_chain_lift: bool = False,
+    include_image: bool = True,
+    compact: bool = False,
+    expected_endpoint: Optional[Endpoint] = None,
 ) -> Any:
     """Place a track segment using a name from the latest valid_pieces list.
 
@@ -585,10 +451,11 @@ def place_track_segment(
             seat_rotation=seat_rotation,
             has_chain_lift=has_chain_lift,
         )
-        placement = _place_track_segment(ride_id, _get_ride_type(ride_id), segment)
+        placement = _place_track_segment(ride_id, _get_ride_type(ride_id), segment, expected_endpoint=expected_endpoint)
     except APIError as e:
-        return _mutation_state(ride_id, e.outcome, str(e))
-    state = _mutation_state(ride_id)
+        return _mutation_state(ride_id, e.outcome, str(e), include_image=include_image, compact=compact,
+                               error_details=e.details)
+    state = _mutation_state(ride_id, include_image=include_image, compact=compact)
     mismatch = placement.get("endpointPredictionMismatch")
     if isinstance(mismatch, dict):
         summary = state[0] if isinstance(state, list) else state
@@ -598,7 +465,9 @@ def place_track_segment(
 
 @mcp.tool()
 def place_track_sequence(
-    ride_id: int, segments: list[TrackSegment] = Field(min_length=1, max_length=256)
+    ride_id: int, segments: list[TrackSegment] = Field(min_length=1, max_length=256),
+    include_image: bool = True, compact: bool = False,
+    expected_endpoint: Optional[Endpoint] = None,
 ) -> Any:
     """Place track pieces in order, stopping at the first failure.
 
@@ -613,11 +482,13 @@ def place_track_sequence(
     error = None
     outcome = "confirmed"
     mismatches: list[dict[str, Any]] = []
+    error_details = None
     try:
         ride_type = _get_ride_type(ride_id)
         for index, segment in enumerate(segments):
             failed_index = index
-            placement = _place_track_segment(ride_id, ride_type, segment)
+            placement = _place_track_segment(ride_id, ride_type, segment,
+                                             expected_endpoint=expected_endpoint if index == 0 else None)
             placed += 1
             mismatch = placement.get("endpointPredictionMismatch") if isinstance(placement, dict) else None
             if isinstance(mismatch, dict):
@@ -625,11 +496,13 @@ def place_track_sequence(
         failed_index = None
     except APIError as e:
         error = str(e)
+        error_details = e.details
         outcome = e.outcome
         if outcome == "confirmed":
             placed += 1
 
-    result = _mutation_state(ride_id, outcome, error)
+    result = _mutation_state(ride_id, outcome, error, confirmed_steps=placed,
+                             include_image=include_image, compact=compact, error_details=error_details)
     summary = result[0] if isinstance(result, list) else result
     summary["placed_count"] = placed
     if mismatches:
@@ -642,7 +515,10 @@ def place_track_sequence(
 
 
 @mcp.tool(annotations={"destructiveHint": True, "openWorldHint": False})
-def undo_last_piece(ride_id: int) -> Any:
+def undo_last_piece(
+    ride_id: int, include_image: bool = True, compact: bool = False,
+    expected_target: Optional[RemovalTarget] = None,
+) -> Any:
     """
     Remove the terminal track segment of the selected connected layout.
 
@@ -650,12 +526,43 @@ def undo_last_piece(ride_id: int) -> Any:
     immediately before the selected station start. Disconnected layouts are rejected.
     """
     try:
-        api_client.delete_last_track_piece(ride_id)
+        if expected_target is None:
+            api_client.delete_last_track_piece(ride_id)
+        else:
+            api_client.delete_last_track_piece(ride_id, expected_target=expected_target.model_dump())
         # Re-fetch the authoritative state: the delete response only contains
         # the next endpoint, not the remaining track history.
-        return _mutation_state(ride_id)
+        return _mutation_state(ride_id, include_image=include_image, compact=compact)
     except APIError as e:
-        return _mutation_state(ride_id, e.outcome, str(e))
+        return _mutation_state(ride_id, e.outcome, str(e), include_image=include_image, compact=compact,
+                               error_details=e.details)
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
+def preview_track_removal(ride_id: int) -> dict[str, Any]:
+    """Identify the exact terminal segment without removing it.
+
+    Pass the returned target as expected_target to remove_terminal_piece or
+    undo_last_piece. The guard detects target/count changes, not every layout
+    change. This is selection inspection, not a game-action permission query.
+    """
+    try:
+        return {"success": True, "ride_id": ride_id, **api_client.preview_track_removal(ride_id)}
+    except APIError as error:
+        return {"success": False, "ride_id": ride_id, "error": str(error)}
+
+
+@mcp.tool(annotations={"destructiveHint": True, "openWorldHint": False})
+def remove_terminal_piece(
+    ride_id: int, include_image: bool = True, compact: bool = False,
+    expected_target: Optional[RemovalTarget] = None,
+) -> Any:
+    """Remove the terminal segment, optionally guarding against a changed preview target.
+
+    Same operation as undo_last_piece, not chronological undo. Close the ride
+    first. A preview is not a reservation; pass expected_target to recheck it.
+    """
+    return undo_last_piece(ride_id, include_image=include_image, compact=compact, expected_target=expected_target)
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
@@ -686,13 +593,14 @@ def get_coaster_state(ride_id: int, include_image: bool = True, compact: bool = 
 
 
 @mcp.tool()
-def place_entrance_exit(ride_id: int) -> Any:
+def place_entrance_exit(ride_id: int, include_image: bool = True, compact: bool = False) -> Any:
     """
     Place entrance and exit for a ride's station.
     """
     try:
         result = api_client.place_entrance_exit(ride_id)
-        state = _mutation_state(ride_id, "partial" if result.get("warning") else "confirmed")
+        state = _mutation_state(ride_id, "partial" if result.get("warning") else "confirmed",
+                                include_image=include_image, compact=compact)
         summary = state[0] if isinstance(state, list) else state
         summary["entrance_exit"] = result
         if result.get("warning"):
@@ -701,7 +609,8 @@ def place_entrance_exit(ride_id: int) -> Any:
         return state
     except APIError as e:
         logger.error(f"API error placing entrance/exit: {e}")
-        return _mutation_state(ride_id, e.outcome, str(e))
+        return _mutation_state(ride_id, e.outcome, str(e), include_image=include_image, compact=compact,
+                               error_details=e.details)
 
 
 @mcp.tool()
@@ -711,20 +620,44 @@ def start_ride_test(ride_id: int) -> dict[str, Any]:
     """
     try:
         result = api_client.start_ride_test(ride_id)
-        return {"success": True, "ride_id": ride_id, "operation_outcome": "confirmed", "message": str(result)}
+        return {"success": True, "ride_id": ride_id, **mutation_status("confirmed"), "message": str(result)}
     except APIError as e:
         logger.error(f"API error starting ride test: {e}")
-        return {"success": False, "operation_outcome": e.outcome, "error": str(e)}
+        return mutation_failure(e, ride_id=ride_id)
 
 
 @mcp.tool()
 def close_ride(ride_id: int) -> dict[str, Any]:
-    """Close a ride before editing its track or vehicle configuration."""
+    """Close a ride before editing track or vehicles. Does not guarantee trains are cleared.
+
+    Closing an already closed ride invokes OpenRCT2's reset behaviour. Prefer the
+    guarded reset_ride tool for an explicit vehicle reset; never retry an unknown outcome.
+    """
     try:
         result = api_client.close_ride(ride_id)
-        return {"success": True, "ride_id": ride_id, "operation_outcome": "confirmed", "message": str(result)}
+        return {"success": True, "ride_id": ride_id, **mutation_status("confirmed"), "message": str(result)}
     except APIError as e:
-        return {"success": False, "ride_id": ride_id, "operation_outcome": e.outcome, "error": str(e)}
+        return mutation_failure(e, ride_id=ride_id)
+
+
+@mcp.tool(annotations={"destructiveHint": True, "openWorldHint": False})
+def reset_ride(ride_id: Annotated[int, Field(ge=0)]) -> dict[str, Any]:
+    """Explicitly clear vehicles for construction on an already closed, guest-free ride.
+
+    Uses the game's second-close behaviour, which can also clear crash/test state.
+    Rejects running rides and nonzero/unknown guest counts. No track is removed.
+    Acknowledgement and observed vehicle clearance are reported separately.
+    """
+    try:
+        result = api_client.reset_ride(ride_id)
+        cleared = result.get("vehicles_cleared")
+        response = {"success": cleared is True, "ride_id": ride_id, **mutation_status("confirmed"), **result,
+                    "state_status": "available" if isinstance(cleared, bool) else "unavailable"}
+        if cleared is not True:
+            response["error_message"] = "Reset action acknowledged, but vehicle clearance was not established"
+        return response
+    except APIError as error:
+        return mutation_failure(error, ride_id=ride_id)
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
@@ -735,13 +668,51 @@ def get_ride_stats(ride_id: int) -> dict[str, Any]:
     Ratings use the game's decimal scale (e.g. 6.52), and are null until
     calculated. Vehicles are instantiated trains: each includes its car count
     when the complete train can be read. Closed rides may have no vehicles.
-    Vehicle velocities are raw OpenRCT2 values, not mph or km/h.
+    Vehicle velocities are raw OpenRCT2 values, not mph or km/h. Head-car status,
+    sprite/track-block positions, progress and raw G-forces are discrete observations,
+    not a full physics trace. Coordinates use tiles and units of 8 game coordinates.
     """
     try:
         return api_client.get_ride_stats(ride_id)
     except APIError as e:
         logger.error(f"API error getting ride stats: {e}")
         return {"success": False, "error": str(e)}
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
+def get_ride_test_report(
+    ride_id: int, observe_seconds: Annotated[float, Field(ge=0, le=60)] = 0,
+) -> dict[str, Any]:
+    """Read test readiness, ratings and game-reported telemetry without changing the ride.
+
+    Optional observation (0-60 seconds, default one immediate sample) looks for
+    nonzero train velocities. This does not start testing or unpause the game.
+    Includes timed observations and station building presence checks, not guest
+    path connectivity. Not observing movement is not proof of a stall. Stop construction first.
+    """
+    if not 0 <= observe_seconds <= 60:
+        return {"success": False, "ride_id": ride_id, "error": "observe_seconds must be 0-60"}
+    try:
+        state = api_client.get_coaster_state(ride_id)
+        samples = []
+        observations = []
+        started = time.monotonic()
+        deadline = started + observe_seconds
+        while True:
+            samples.append(api_client.get_ride_stats(ride_id))
+            observed = time.monotonic()
+            observations.append({"elapsed_seconds": observed - started, "stats": samples[-1]})
+            remaining = deadline - observed
+            if remaining <= 0:
+                break
+            time.sleep(min(1, remaining))
+        after = api_client.get_coaster_state(ride_id)
+        if after != state:
+            raise APIError("Ride layout changed during observation; collect again after editing stops")
+        return {"success": True, "ride_id": ride_id, "observation_seconds_requested": observe_seconds,
+                **test_report(state, samples), "observations": observations}
+    except APIError as error:
+        return {"success": False, "ride_id": ride_id, "error": str(error)}
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
@@ -761,9 +732,27 @@ def get_track_catalog() -> Any:
         return {"success": False, "error": str(e)}
 
 
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
+def get_loaded_ride_objects(ride_type: Optional[int] = None) -> dict[str, Any]:
+    """Discover loaded vehicle/ride objects, optionally filtered by numeric ride type.
+
+    Object indices can be passed as ride_object to create_ride. Car limits are
+    object metadata, not guarantees of effective train length. Track availability
+    remains unknown. Per-type research status is invented, uninvented or unknown,
+    not a guarantee that creation or track placement is permitted.
+    """
+    try:
+        objects = api_client.get_loaded_ride_objects()
+        if ride_type is not None:
+            objects = [obj for obj in objects if ride_type in obj["ride_types"]]
+        return {"success": True, "objects": objects}
+    except APIError as error:
+        return {"success": False, "error": str(error)}
+
+
 @mcp.tool()
 def set_ride_vehicles(
-    ride_id: int, setting: Literal["trains", "cars_per_train"], value: int
+    ride_id: int, setting: Literal["trains", "cars_per_train"], value: Annotated[int, Field(ge=1, le=255)]
 ) -> dict[str, Any]:
     """Set the proposed train count or cars per train using OpenRCT2's ride action.
 
@@ -771,9 +760,38 @@ def set_ride_vehicles(
     count based on station length and track layout. Close the ride first.
     """
     try:
-        return {"success": True, "operation_outcome": "confirmed", **api_client.set_ride_vehicles(ride_id, setting, value)}
+        return {"success": True, **mutation_status("confirmed"), **api_client.set_ride_vehicles(ride_id, setting, value)}
     except APIError as e:
-        return {"success": False, "ride_id": ride_id, "error": str(e)}
+        return mutation_failure(e, ride_id=ride_id)
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
+def get_park_status() -> dict[str, Any]:
+    """Observe park finances, guests, scenario objective/status, date and research.
+
+    Read-only; does not advance time, change settings or infer objective progress.
+    Fields ending in _raw retain scripting API units. Requires a loaded normal park.
+    """
+    try:
+        return {"success": True, **api_client.get_park_status()}
+    except APIError as error:
+        return {"success": False, "error": str(error)}
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
+def get_ride_station_access(
+    ride_id: Annotated[int, Field(ge=0)], radius: Annotated[int, Field(ge=0, le=4)] = 2,
+) -> dict[str, Any]:
+    """Inspect station buildings and bounded nearby paths without changing the park.
+
+    Coordinates use tiles and height units of 8 game coordinates. Stations expose
+    present/absent/unknown positions. Paths retain edges, slopes, queue assignments
+    and ghosts. This does not prove guest access or public-network connectivity.
+    """
+    try:
+        return {"success": True, **api_client.get_ride_station_access(ride_id, radius)}
+    except APIError as error:
+        return {"success": False, "ride_id": ride_id, "error": str(error)}
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
@@ -785,11 +803,11 @@ def get_plugin_info() -> dict[str, Any]:
     """
     try:
         info = api_client.get_plugin_info()
-        return {**info, "version": info.get("version"), "expected_version": "0.10.0",
-                "matches": info.get("version") == "0.10.0",
-                "expected_protocol_version": 1, "protocol_compatible": info.get("protocol_version") == 1}
+        return {**info, "version": info.get("version"), "expected_version": PLUGIN_VERSION,
+                "matches": info.get("version") == PLUGIN_VERSION,
+                "expected_protocol_version": PROTOCOL_VERSION, "protocol_compatible": type(info.get("protocol_version")) is int and info["protocol_version"] == PROTOCOL_VERSION}
     except APIError as e:
-        return {"success": False, "error": str(e), "expected_version": "0.10.0"}
+        return {"success": False, "error": str(e), "expected_version": PLUGIN_VERSION}
 
 
 @mcp.tool(annotations={"destructiveHint": True, "openWorldHint": False})
@@ -797,9 +815,9 @@ def delete_ride(ride_id: int) -> dict[str, Any]:
     """Permanently demolish one ride by ID, including its track and vehicles."""
     try:
         api_client.delete_ride(ride_id)
-        return {"success": True, "ride_id": ride_id, "operation_outcome": "confirmed"}
+        return {"success": True, "ride_id": ride_id, **mutation_status("confirmed")}
     except APIError as e:
-        return {"success": False, "operation_outcome": e.outcome, "error": str(e), "ride_id": ride_id}
+        return mutation_failure(e, ride_id=ride_id)
 
 
 @mcp.tool(annotations={"destructiveHint": True, "openWorldHint": False})
@@ -809,10 +827,10 @@ def delete_all_rides() -> dict[str, Any]:
     """
     try:
         result = api_client.delete_all_rides()
-        return {"success": True, "operation_outcome": "confirmed", "message": str(result)}
+        return {"success": True, **mutation_status("confirmed"), "message": str(result)}
     except APIError as e:
         logger.error(f"API error deleting rides: {e}")
-        return {"success": False, "operation_outcome": e.outcome, "error": str(e)}
+        return mutation_failure(e)
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
@@ -833,9 +851,34 @@ def list_all_rides() -> Any:
         return {"success": False, "error": str(e)}
 
 
+register_park_tools(mcp, lambda: api_client, get_ride_test_report)
+
+
 def main() -> None:
-    """Main entry point."""
-    mcp.run()
+    """Main entry point. Metrics are opt-in and never overwrite an existing run."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--port", type=int, default=8080, help="local plugin TCP port (default: 8080)")
+    parser.add_argument("--metrics-file", type=Path, default=os.environ.get("OPENRCT2_METRICS_FILE"),
+                        help="new local JSONL metrics file, or OPENRCT2_METRICS_FILE")
+    args = parser.parse_args()
+    if not 1 <= args.port <= 65535:
+        parser.error("port must be 1-65535")
+    api_client.port = args.port
+    with ExitStack() as stack:
+        if args.metrics_file:
+            try:
+                result_middleware.sink = stack.enter_context(args.metrics_file.open("x", encoding="utf-8"))
+            except OSError as error:
+                parser.error(f"Cannot create metrics file: {error}")
+        try:
+            mcp.run()
+        except BaseException:
+            # Do not certify an interrupted collection as complete.
+            result_middleware.sink = None
+            raise
+        finally:
+            result_middleware.finish_capture()
+            api_client.close()
 
 
 if __name__ == "__main__":

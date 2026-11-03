@@ -5,6 +5,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .inspection import movement_observed, station_buildings_present
+
 
 class FootprintBounds(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
@@ -25,6 +27,7 @@ class AcceptanceCriteria(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True, allow_inf_nan=False)
 
     ride_type: int = Field(ge=0)
+    require_station_buildings: bool = False
     footprint_bounds: FootprintBounds
     min_excitement: Optional[float] = Field(default=None, ge=0)
     max_intensity: Optional[float] = Field(default=None, ge=0)
@@ -33,7 +36,7 @@ class AcceptanceCriteria(BaseModel):
 class BenchmarkBrief(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
 
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
     id: str = Field(min_length=1)
     park_name: str = Field(min_length=1)
     prompt: str = Field(min_length=1)
@@ -59,11 +62,7 @@ def evaluate_ride(
         bounds.min_y <= actual_bounds['min_y'] <= actual_bounds['max_y'] <= bounds.max_y
     )
     latest = stats_samples[-1] if stats_samples else {}
-    observed_moving = any(
-        isinstance(vehicle.get('velocity'), (int, float)) and
-        math.isfinite(vehicle['velocity']) and vehicle['velocity'] != 0
-        for sample in stats_samples for vehicle in sample.get('vehicles', [])
-    )
+    observed_moving = movement_observed(stats_samples)
     running = latest.get('ride_status') in ('testing', 'open') and latest.get('game_paused') is False
     checks = [
         {'name': 'state_available', 'passed': state.get('success') is True,
@@ -84,6 +83,13 @@ def evaluate_ride(
         {'name': 'observed_train_movement', 'passed': observed_moving,
          'actual': observed_moving, 'expected': True},
     ]
+    if brief.criteria.require_station_buildings:
+        for building in ('entrance', 'exit'):
+            checks.append({
+                'name': f'station_{building}s_present',
+                'passed': station_buildings_present(state.get('stations'), building),
+                'actual': state.get('stations'), 'expected': f'Every station has a present {building}',
+            })
     for name, value, minimum in [
         ('excitement', brief.criteria.min_excitement, True),
         ('intensity', brief.criteria.max_intensity, False),

@@ -5,12 +5,10 @@ real TCP socket that the MCP client connects to, and bridges it to the plugin's
 stdio, so the full wire contract is exercised without the game.
 """
 
-import select
 import shutil
 import socket
 import subprocess
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -42,21 +40,22 @@ class _PluginBridge:
         self._start_bridge()
 
     def _wait_ready(self) -> None:
-        deadline = time.time() + 10
-        while time.time() < deadline:
-            if self.proc.poll() is not None:
-                raise RuntimeError(
-                    "plugin server exited early: " + "".join(self.stderr_lines)
-                )
-            readable, _, _ = select.select([self.proc.stderr], [], [], 0.2)
-            if readable:
-                line = self.proc.stderr.readline()
-                if line:
-                    text = line.decode(errors="replace").rstrip()
-                    self.stderr_lines.append(text)
-                    if text == "READY":
-                        return
-        raise RuntimeError("plugin server did not become ready: " + "".join(self.stderr_lines))
+        ready = threading.Event()
+
+        def drain_stderr() -> None:
+            # readline may buffer READY alongside the preceding log line. A
+            # select() on the OS descriptor would then miss that buffered line.
+            for line in self.proc.stderr:
+                text = line.decode(errors="replace").rstrip()
+                self.stderr_lines.append(text)
+                if text == "READY":
+                    ready.set()
+            ready.set()  # Also wake startup checks when the child exits early.
+
+        threading.Thread(target=drain_stderr, daemon=True).start()
+        if not ready.wait(timeout=10) or "READY" not in self.stderr_lines:
+            self.close()
+            raise RuntimeError("plugin server did not become ready: " + "\n".join(self.stderr_lines))
 
     def _start_bridge(self) -> None:
         def accept_and_bridge() -> None:
@@ -99,6 +98,7 @@ class _PluginBridge:
             self.proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             self.proc.kill()
+            self.proc.wait()
 
 
 @pytest.fixture
@@ -221,3 +221,36 @@ def test_mcp_serialization_and_revision_flow(plugin_server):
             assert (await call('delete_ride', ride_id=ride_id))['operation_outcome'] == 'confirmed'
 
     asyncio.run(run())
+
+
+@pytest.mark.skipif(not _has_node, reason='node is required for integration tests')
+def test_flat_path_placement_guards_opening_and_checkpoint_through_mcp(plugin_server):
+    import asyncio
+    from fastmcp import Client
+    from openrct2_mcp.client_helpers import call_object
+
+    async def scenario():
+        async with Client(mcp_server.mcp) as client:
+            objects = await call_object(client, 'get_path_objects')
+            assert objects['surfaces'][0]['identifier'] == 'test.surface'
+            placed = await call_object(client, 'place_path_tile', x=90, y=90, z=14,
+                                       surface_object=0, railings_object=0, is_queue=True)
+            assert placed['operation_outcome'] == 'confirmed'
+            path = placed['observed_after']['paths'][0]
+            assert path['is_queue'] is True and path['base_z'] == 14
+            assert path['surface_object'] == path['railings_object'] == 0
+            rejected = await call_object(client, 'place_path_tile', allow_failure=True, x=90, y=90, z=14,
+                                        surface_object=0, railings_object=0)
+            assert rejected['operation_outcome'] == 'rejected'
+            stale = await call_object(client, 'remove_path_tile', allow_failure=True, x=90, y=90, z=14,
+                                     expected_path={**path, 'edges': 15})
+            assert stale['operation_outcome'] == 'rejected'
+            removed = await call_object(client, 'remove_path_tile', x=90, y=90, z=14, expected_path=path)
+            assert removed['operation_outcome'] == 'confirmed' and removed['observed_after']['paths'] == []
+            ride = await call_object(client, 'create_ride', include_image=False, compact=True)
+            opened = await call_object(client, 'open_ride', ride_id=ride['ride_id'])
+            assert opened['operation_outcome'] == 'confirmed'
+            checkpoint = await call_object(client, 'save_park', label='contract')
+            assert checkpoint['save_requested'] is True and checkpoint['file_written'] == 'unknown'
+
+    asyncio.run(scenario())

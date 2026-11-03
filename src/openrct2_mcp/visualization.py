@@ -2,7 +2,7 @@
 
 import io
 import math
-from typing import Any
+from typing import Any, Optional
 
 from fastmcp.utilities.types import Image as MCPImage
 from PIL import Image, ImageDraw
@@ -151,3 +151,177 @@ def render_elevation_view(samples: list[dict[str, Any]]) -> MCPImage:
     draw.text((left, 10), "Origin / connection height (Z units of 8 game coordinates)", fill="white")
     draw.text((left, height - 30), "Track-piece boundary index (not distance). Straight lines omit within-piece geometry.", fill="white")
     return png(image)
+
+
+def generate_coaster_image(
+    history: list[dict[str, Any]], next_endpoint: dict[str, Any],
+    track_elements: Optional[list[dict[str, Any]]] = None,
+) -> MCPImage:
+    """
+    Generate a visual top-down representation of the coaster as an MCP ImageContent.
+    """
+    if not history:
+        # Return a simple empty image
+        img = Image.new("RGB", (100, 100), color=(255, 255, 255))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return MCPImage(data=buf.getvalue(), format="png")
+
+    points = []
+    for p in history:
+        points.append((p["x"], p["y"], p["z"], "P"))
+    if next_endpoint and "x" in next_endpoint:
+        points.append((next_endpoint["x"], next_endpoint["y"], next_endpoint["z"], "C"))
+
+    bounds = points + [(e["x"], e["y"], e["z"], "T") for e in track_elements or []]
+    min_x = min(p[0] for p in bounds)
+    max_x = max(p[0] for p in bounds)
+    min_y = min(p[1] for p in bounds)
+    max_y = max(p[1] for p in bounds)
+
+    padding = 2
+    min_x -= padding
+    max_x += padding
+    min_y -= padding
+    max_y += padding
+
+    tile_size = min(40, 1600 / max(max_x - min_x + 1, max_y - min_y + 1))
+    width = max(1, round((max_x - min_x + 1) * tile_size))
+    height = max(1, round((max_y - min_y + 1) * tile_size))
+
+    img_main = Image.new("RGB", (width, height), color=(40, 40, 40))
+    draw = ImageDraw.Draw(img_main)
+
+    # Function to convert tile coords to pixel coords in image (center of tile)
+    def to_img_center(tx: int, ty: int) -> tuple[float, float]:
+        return (
+            (tx - min_x) * tile_size + tile_size // 2,
+            (ty - min_y) * tile_size + tile_size // 2,
+        )
+
+    def to_img_topleft(tx: int, ty: int) -> tuple[float, float]:
+        return (tx - min_x) * tile_size, (ty - min_y) * tile_size
+
+    # Draw grid
+    for x in range(min_x, max_x + 1):
+        ix, _ = to_img_topleft(x, 0)
+        draw.line([(ix, 0), (ix, height)], fill=(60, 60, 60))
+    for y in range(min_y, max_y + 1):
+        _, iy = to_img_topleft(0, y)
+        draw.line([(0, iy), (width, iy)], fill=(60, 60, 60))
+
+    # Actual track-element tiles are a footprint, not collision clearance.
+    for element in track_elements or []:
+        ix, iy = to_img_topleft(element["x"], element["y"])
+        inset = min(2, tile_size / 4)
+        draw.rectangle([ix + inset, iy + inset, ix + tile_size - inset, iy + tile_size - inset], fill=(70, 70, 90))
+
+    # Determine height range for color scaling
+    min_z_val = min(p[2] for p in points)
+    max_z_val = max(p[2] for p in points)
+    z_range = max(1, max_z_val - min_z_val)
+
+    def get_color(z: int) -> tuple[int, int, int]:
+        z_norm = (z - min_z_val) / z_range
+        return (
+            int(255 * z_norm),
+            int(255 * (1 - z_norm)),
+            int(255 * (1 - abs(0.5 - z_norm) * 2)),
+        )
+
+    # 1. Draw connecting lines first (the track itself)
+    for i in range(len(points) - 1):
+        p1 = points[i]
+        p2 = points[i + 1]
+        c1 = to_img_center(p1[0], p1[1])
+        c2 = to_img_center(p2[0], p2[1])
+
+        # Curved pieces need more than a straight line between tile origins.
+        # Approximate their centreline using the entry and exit directions;
+        # this is not an exact track footprint.
+        piece = history[i] if i < len(history) else {}
+        turn_types = {16, 17, 22, 23, 42, 43, 44, 45}
+        line = [c1, c2]
+        if piece.get("trackType") in turn_types and "nextDirection" in piece:
+            directions = [(-1, 0), (0, 1), (1, 0), (0, -1)]
+            start_direction = directions[piece["direction"] % 4]
+            end_direction = directions[piece["nextDirection"] % 4]
+            distance = max(abs(c2[0] - c1[0]), abs(c2[1] - c1[1])) * 0.55
+            control1 = (c1[0] + start_direction[0] * distance, c1[1] + start_direction[1] * distance)
+            control2 = (c2[0] - end_direction[0] * distance, c2[1] - end_direction[1] * distance)
+            line = []
+            for step in range(21):
+                t = step / 20
+                u = 1 - t
+                line.append(tuple(round(u**3 * c1[j] + 3 * u**2 * t * control1[j]
+                                        + 3 * u * t**2 * control2[j] + t**3 * c2[j]) for j in (0, 1)))
+        draw.line(line, fill=get_color(p1[2]), width=12)
+        draw.line(line, fill=(200, 200, 200), width=2)
+
+    # 2. Draw nodes (boxes) on top
+    for i, (px, py, pz, ptype) in enumerate(points):
+        ix, iy = to_img_topleft(px, py)
+        color = get_color(pz)
+
+        # Border color
+        outline = (255, 255, 255) if ptype == "C" else (150, 150, 150)
+        if i == 0:
+            outline = (0, 255, 0)  # Green for start
+
+        # Draw a small box for the node
+        box_size = min(10, tile_size / 4)
+        cx, cy = to_img_center(px, py)
+        draw.rectangle(
+            [cx - box_size, cy - box_size, cx + box_size, cy + box_size],
+            fill=color,
+            outline=outline,
+            width=2,
+        )
+
+        # Label with height (offset so it doesn't overlap the line)
+        label = f"{pz}"
+        if i == 0:
+            label = f"S:{pz}"
+        elif ptype == "C":
+            label = f"C:{pz}"
+
+        if tile_size >= 16:
+            draw.text((ix + 2, iy + 2), label, fill=(255, 255, 255))
+
+    draw_heading(draw, to_img_center(history[0]["x"], history[0]["y"]),
+                 history[0]["direction"], (90, 240, 150), min(24, tile_size * 0.6))
+    if next_endpoint and "direction" in next_endpoint:
+        draw_heading(draw, to_img_center(next_endpoint["x"], next_endpoint["y"]),
+                     next_endpoint["direction"], (255, 220, 70), min(24, tile_size * 0.6))
+
+    buf_final = io.BytesIO()
+    img_main.save(buf_final, format="PNG")
+    return MCPImage(data=buf_final.getvalue(), format="png")
+
+
+def generate_height_map(track_elements: Optional[list[dict[str, Any]]]) -> str:
+    """Show actual track-element base heights, not collision clearance."""
+    if track_elements is None:
+        return "Track occupancy unavailable: update the OpenRCT2 plugin."
+    if not track_elements:
+        return "No track elements."
+
+    grid: dict[tuple[int, int], set[float]] = {}
+    for element in track_elements:
+        grid.setdefault((element["x"], element["y"]), set()).add(element["z"])
+    min_x = min(x for x, _ in grid)
+    max_x = max(x for x, _ in grid)
+    min_y = min(y for _, y in grid)
+    max_y = max(y for _, y in grid)
+    if (max_x - min_x + 1) * (max_y - min_y + 1) > 4096:
+        return "Track occupancy grid omitted (over 4096 tiles). Use track_elements or get_map_area."
+    labels = {key: "/".join(f"{z:g}" for z in sorted(heights)) for key, heights in grid.items()}
+    width = max(4, max(len(label) for label in labels.values()) + 1, len(str(min_x)) + 1, len(str(max_x)) + 1)
+    lines = ["Track-element base heights (not collision clearance):"]
+    lines.append(" " * 5 + "".join(f"{x:>{width}}" for x in range(min_x, max_x + 1)))
+    lines.append(" " * 5 + "-" * (width * (max_x - min_x + 1)))
+    for y in range(min_y, max_y + 1):
+        row = [f"{y:3} |"]
+        row.extend(f"{labels.get((x, y), '.'):>{width}}" for x in range(min_x, max_x + 1))
+        lines.append("".join(row))
+    return "\n".join(lines)

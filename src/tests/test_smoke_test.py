@@ -16,7 +16,8 @@ spec.loader.exec_module(smoke_test)
 
 
 class FakeClient:
-    def __init__(self, rides=None, mismatches=None):
+    def __init__(self, rides=None, mismatches=None, park_name="sandbox"):
+        self.park_name = park_name
         self.rides = rides or []
         self.mismatches = mismatches or []
         self.calls = []
@@ -29,7 +30,7 @@ class FakeClient:
     async def __aexit__(self, *args):
         pass
 
-    async def call_tool(self, name, arguments):
+    async def call_tool(self, name, arguments, **kwargs):
         self.calls.append((name, arguments))
         if name == 'close_ride':
             self.closed = True
@@ -44,6 +45,8 @@ class FakeClient:
             self.endpoints.pop()
         responses = {
             "get_plugin_info": {"matches": True, "protocol_compatible": True},
+            "get_park_status": {"park_name": self.park_name, "game_mode": "normal", "game_paused": False},
+            "reset_ride": {"success": True, "vehicles_cleared": True},
             "get_coaster_view": {"success": True, "piece_count": 42},
             "close_ride": {"success": True},
             "undo_last_piece": {"success": True, "current_endpoint": self.endpoints[-1] if self.endpoints else {}},
@@ -71,12 +74,12 @@ def test_smoke_test_builds_and_tests_a_coaster(capsys):
         asyncio.run(smoke_test.run(10))
 
     assert [name for name, _ in client.calls] == [
-        "list_all_rides", "get_plugin_info", "create_ride", "place_track_sequence",
+        "list_all_rides", "get_plugin_info", "get_park_status", "create_ride", "place_track_sequence",
         "get_coaster_view", "get_coaster_view", "place_entrance_exit",
-        "start_ride_test", "get_ride_stats", "close_ride", "get_ride_stats", "undo_last_piece",
+        "start_ride_test", "get_ride_stats", "close_ride", "get_ride_stats", "reset_ride", "undo_last_piece",
         "place_track_segment", "place_entrance_exit", "start_ride_test", "get_ride_stats",
     ]
-    segments = client.calls[3][1]["segments"]
+    segments = client.calls[4][1]["segments"]
     assert len(segments) == 41
     assert segments[2] == {"track_type": "FlatToUp25", "has_chain_lift": True}
     assert "Smoke test passed" in capsys.readouterr().out
@@ -88,7 +91,7 @@ def test_smoke_test_fails_on_endpoint_mismatch():
         with pytest.raises(RuntimeError, match="Endpoint prediction mismatches"):
             asyncio.run(smoke_test.run(10))
 
-    assert [name for name, _ in client.calls] == ['list_all_rides', 'get_plugin_info', 'create_ride', 'place_track_sequence']
+    assert [name for name, _ in client.calls] == ['list_all_rides', 'get_plugin_info', 'get_park_status', 'create_ride', 'place_track_sequence']
 
 
 def test_smoke_test_refuses_park_with_rides():
@@ -126,7 +129,7 @@ class CollisionClient:
         self.responses.update(overrides or {})
         self.calls = []
 
-    async def call_tool(self, name, arguments):
+    async def call_tool(self, name, arguments, **kwargs):
         self.calls.append((name, arguments))
         return SimpleNamespace(content=[SimpleNamespace(type='text', text=json.dumps(self.responses[name]))],
                                is_error=False)
@@ -156,3 +159,39 @@ def test_collision_check_fails_and_preserves_ride_for_inspection(override, error
         asyncio.run(smoke_test.verify_collisions(client))
 
     assert 'delete_ride' not in [name for name, _ in client.calls]
+
+
+def test_revision_probe_checks_guards_readback_and_deletes_only_its_new_ride():
+    from unittest.mock import AsyncMock
+
+    endpoint = {'x': 99, 'y': 100, 'z': 30, 'direction': 0}
+    target = {**endpoint, 'track_type': 0, 'base_z_game': 240, 'piece_count': 2}
+    responses = [
+        {'objects': [{'index': 15}]}, {'ride_id': 8, 'current_endpoint': endpoint},
+        {'piece_count': 2, 'current_endpoint': endpoint}, {'results': [{'success': True}, {'success': False}]},
+        {'target': target}, {'operation_outcome': 'rejected', 'piece_count': 2},
+        {'piece_count': 1, 'current_endpoint': endpoint}, {'operation_outcome': 'rejected', 'piece_count': 1},
+        {}, {}, {'pieces': [{'options': {'has_chain_lift': True}}, {}, {'options': {'brake_speed': 12}}]}, {},
+    ]
+    client = object()
+    with patch.object(smoke_test, 'call', AsyncMock(side_effect=responses)) as call:
+        asyncio.run(smoke_test.verify_revision_api(client))
+
+    assert [item.args[1] for item in call.await_args_list] == [
+        'get_loaded_ride_objects', 'create_ride', 'place_track_segment', 'check_track_candidates',
+        'preview_track_removal', 'remove_terminal_piece', 'remove_terminal_piece', 'place_track_segment',
+        'place_track_segment', 'place_track_sequence', 'get_coaster_state', 'delete_ride',
+    ]
+    assert call.await_args_list[5].kwargs['expected_target']['piece_count'] == 3
+    assert call.await_args_list[6].kwargs['expected_target'] == target
+    assert call.await_args_list[7].kwargs['expected_endpoint']['x'] == 100
+    assert call.await_args_list[-1].kwargs == {'ride_id': 8}
+
+
+def test_smoke_test_refuses_an_empty_but_wrong_park_before_building():
+    client = FakeClient(park_name='Other park')
+    with patch.object(smoke_test, 'Client', return_value=client):
+        with pytest.raises(RuntimeError, match='intended sandbox'):
+            asyncio.run(smoke_test.run(10))
+
+    assert [name for name, _ in client.calls] == ['list_all_rides', 'get_plugin_info', 'get_park_status']

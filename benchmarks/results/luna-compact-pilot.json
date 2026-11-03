@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "kind": "exploratory_agent_pilot",
+  "brief_id": "compact-coaster",
+  "model": "openai/gpt-6-luna",
+  "thinking": "medium",
+  "source_head": "84dea5004596506edaf1c907b137b44d9fbfadcf",
+  "plugin_version": "0.12.0",
+  "passed": false,
+  "measurements": {
+    "piece_count": 19,
+    "footprint_bounds": {
+      "min_x": 59,
+      "max_x": 67,
+      "min_y": 66,
+      "max_y": 73
+    },
+    "ratings": {
+      "excitement": null,
+      "intensity": null,
+      "nausea": null
+    },
+    "stats_sample_count": 11,
+    "agent_tool_calls": null,
+    "rejected_placements": null
+  },
+  "metrics": {
+    "schema_version": 1,
+    "sha256": "705768b45f28353843a7cb7965e3bc31b279ee1b31d65e1ddf3dede457c0ef12",
+    "tool_calls": 12,
+    "capture_complete": true,
+    "tool_failures": 3,
+    "summed_call_seconds": 2.3011762290043407,
+    "requested_placements": 33,
+    "confirmed_placements": 19,
+    "rejected_placement_requests": 3,
+    "unknown_placements": 0,
+    "confirmed_removals": 0,
+    "query_candidates": 5,
+    "blocked_query_candidates": 4,
+    "response_text_bytes": 56150,
+    "response_image_base64_chars": 34808,
+    "limitations": "Counts cover this server process, not proven agent/ride ownership. Rejected placement requests include preflight rejection. Summed call durations are not elapsed trial time or token usage. Exceptions/cancellations may leave unacknowledged effects unknown."
+  },
+  "failed_checks": [
+    "closed_circuit",
+    "ratings_available",
+    "running_unpaused",
+    "observed_train_movement",
+    "station_entrances_present",
+    "station_exits_present"
+  ],
+  "observations": [
+    "Self-collision followed by early abandonment. Endpoint inspection and alternative queries were used, but no removals were attempted.",
+    "The wide endpoint response was truncated. Compact endpoint output was subsequently added and live-verified.",
+    "Blanket destructive-tool permission wording was subsequently narrowed to permit normal revision of task-created track."
+  ],
+  "limitations": [
+    "One attempt, not a success-rate estimate or model ranking.",
+    "Earlier setup-only failure is excluded from ride acceptance evidence.",
+    "Causation for early abandonment is not established.",
+    "This summary omits conversations, raw game state and images. Full local evidence was not added to the repository."
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "id": "continue-coaster",
+  "brief": {
+    "schema_version": 2,
+    "id": "continue-coaster",
+    "park_name": "sandbox",
+    "prompt": "Continue existing Wooden Roller Coaster ride {ride_id}. Preserve its initial eight pieces, including the station, and finish the design. Aim for excitement >= 3.0 and intensity <= 8.0 on the game decimal scale. Every target track-element tile must remain within x=20..125 and y=20..125 inclusive. Leave the same ride ID with a complete circuit, station entrance and exit, calculated ratings and moving trains, testing in the unpaused sandbox. Choose the design yourself. Report the ride ID, ratings and any unmet requirements.",
+    "criteria": {
+      "require_station_buildings": true,
+      "ride_type": 52,
+      "footprint_bounds": {
+        "min_x": 20,
+        "max_x": 125,
+        "min_y": 20,
+        "max_y": 125
+      },
+      "min_excitement": 3.0,
+      "max_intensity": 8.0
+    }
+  },
+  "reference": "rated-coaster",
+  "station": {
+    "x": 119,
+    "y": 115,
+    "z": 14,
+    "direction": 0
+  },
+  "prefix_segments": 7,
+  "protected_prefix_pieces": 8,
+  "obstruction": null,
+  "test_before_handoff": false,
+  "validation": {
+    "openrct2_version": "0.5.7",
+    "api_version": 124,
+    "plugin_version": "0.12.0",
+    "input_sha256": "699d33507696c2f04771bf7ab55c13df5d42a50733d68a28ae38820f97312a7e",
+    "reference_input_sha256": "f7bda2fababb4d9f57758f14e2a5045d5455ea4bf50e9d3e0d815d30ff514eb7",
+    "completion_reference_input_sha256": "f7bda2fababb4d9f57758f14e2a5045d5455ea4bf50e9d3e0d815d30ff514eb7",
+    "completed_piece_count": 74,
+    "completed_ratings": {
+      "excitement": 5.07,
+      "intensity": 6.32,
+      "nausea": 3.43
+    },
+    "completed_footprint_bounds": {
+      "min_x": 85,
+      "max_x": 125,
+      "min_y": 110,
+      "max_y": 115
+    },
+    "protected_prefix_preserved": true,
+    "protected_rides_preserved": true,
+    "explicit_reset_before_revision": false
+  }
+}

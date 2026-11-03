@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "kind": "scripted_guest_calibration",
+  "plugin_version": "0.13.0",
+  "game_version": "0.5.7",
+  "scripting_api": 124,
+  "passed": true,
+  "checks": {
+    "entrance_route_edges": true,
+    "exit_route_edges": true,
+    "entrance_door_edge": true,
+    "exit_door_edge": true,
+    "queue_assignment": true,
+    "track_preserved": true
+  },
+  "ride_type": 52,
+  "piece_count": 74,
+  "ratings": {
+    "excitement": 5.07,
+    "intensity": 6.32,
+    "nausea": 3.43
+  },
+  "baseline_customers": 0,
+  "observed_customers": 6,
+  "observed_riders": 2,
+  "checkpoint": {
+    "request_acknowledged": true,
+    "file_exists_verified": true,
+    "reload_verified": true,
+    "bytes": 11729,
+    "sha256": "1d33dc1682b4f674d6d5a3759a86bb5fc528f80b8ab36f4cf170a9c28be6742c",
+    "customers_after_reload": 14
+  },
+  "stale_path_guard_verified": true,
+  "primary_park_unchanged": true,
+  "limitations": [
+    "Specific flat routes to the bundled sandbox anchor were checked, not arbitrary park-wide connectivity.",
+    "Customer completion and exit-route connectivity were observed, not individual guest trajectories.",
+    "Save acknowledgement alone does not confirm persistence; this calibration verified the file and reload separately. No scenario-finance or objective success is claimed."
+  ],
+  "plugin_sha256": "fe4927414f3551e60073d3a246a04e5d6bf39335ac1d980759d19d9f3e66da42"
+}

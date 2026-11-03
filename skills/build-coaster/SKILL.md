@@ -40,6 +40,12 @@ is deliberate. Diagonal and inverted endpoints are not supported.
 - A chain lift uses `has_chain_lift: true` on its pieces, including transitions.
 - `check_track_segment` asks the game whether a candidate fits without placing
   it. Success is not a reservation or proof of ride support/connectivity.
+- `check_track_candidates` queries 1–32 independent alternatives at the same
+  endpoint, not a hypothetical sequence. Inspect each item's `success` and
+  `placeable`; top-level success means collection succeeded.
+- Append actions recheck candidates, endpoint and piece count inside the plugin.
+  Optional `expected_endpoint` checks against your prior observation (first
+  piece only for a sequence). These guards are not atomic game transactions.
 - `place_track_sequence` takes 1–256 segment objects and checks each against the
   current state. It stops on failure without rolling back previous placements.
 - `current_endpoint` gives the construction position and direction. Its
@@ -53,8 +59,19 @@ is deliberate. Diagonal and inverted endpoints are not supported.
 
 `get_coaster_state` returns one game snapshot. Use `include_image: false` and
 `compact: true` when only the endpoint, candidates and piece count are needed.
-The default includes full history, occupancy and a top-down image.
+The default includes full history, occupancy and a top-down image. State-returning
+mutations accept these same `include_image` and `compact` controls. Prefer compact,
+image-free output for routine construction when a full view is unnecessary.
 
+- Full state includes actual per-piece `options` and the selected `ride_object`.
+  Compact and full state also include station building positions and explicit
+  present/absent/unknown statuses; unknown does not establish presence.
+  Null options are unavailable/inapplicable, not inferred defaults.
+- `get_loaded_ride_objects` discovers loaded object identifiers and current
+  indices. Pass a selected index as `ride_object` to `create_ride`; indices are
+  park-specific. Per-type `research` status matches the object and ride type,
+  and is invented/uninvented/unknown, not a guarantee of buildability or track
+  support. Car limits are nominal, not effective-train guarantees.
 - `candidate_status` explains unavailable candidates or circuit completion.
   An empty list may mean unsupported geometry, not that nothing can connect.
 - `layout_status: disconnected`, `ambiguous`, or `truncated` blocks implicit
@@ -67,8 +84,14 @@ The default includes full history, occupancy and a top-down image.
   does not establish that a track segment will fit.
 - `get_coaster_view(view="endpoint", radius=4)` shows nearby terrain, slope/water
   indicators, paths, scenery and tracks. It returns the underlying `map_area`,
-  including base/clearance heights at all levels. Ghosts are omitted from the
-  image but retained in the data. Ride and map reads are separate observations.
+  including base/clearance heights at all levels. Use `compact=True` to reduce
+  repeated terrain text, especially for larger radii. `terrain_summary` counts
+  omitted instances of the most common flat, dry, non-ghost surface. All other
+  elements retain coordinates and heights in `map_area.tiles`, including tracks,
+  paths, scenery, ghosts and differing terrain. Empty tiles are omitted. Use the
+  default `compact=False` for exact omitted terrain locations. The image always
+  uses the full observations, omitting ghosts. Neither mode establishes
+  clearance. Ride and map reads are separate observations.
 - Yellow arrows mark the endpoint heading; green arrows mark the start/return
   heading. `S/C` means a shared tile. `return_offset` points from the endpoint to
   the start even when the start is outside the endpoint view. Both headings also
@@ -80,8 +103,13 @@ The default includes full history, occupancy and a top-down image.
 
 ## Errors and editing
 
-Read `success`, `operation_outcome`, and the game error before deciding what to
-retry. `operation_outcome` describes the requested mutation (or failing segment
+Read `success`, `execution_status`, `state_status`, `operation_outcome`, and the
+game error before deciding what to retry. `execution_status` describes overall
+progress: completed, rejected, partial or unknown. `state_status` distinguishes
+available/unavailable inspection from tools that did not request a state read.
+A confirmed prefix followed by failure is partial execution even when the
+failing action was rejected. Structured `error_details` preserve game errors
+when available. `operation_outcome` describes the requested mutation (or failing segment
 of a sequence), not whether the state refresh succeeded:
 
 - `confirmed`: the game acknowledged the mutation. A later state read can still
@@ -102,7 +130,18 @@ begin station it removes the piece immediately before that station. Without a
 begin station, the traversal start is selected from map order. Inspect state
 before removing anything. A rejected placement does not require an undo.
 
-Close the ride with `close_ride` before editing or changing vehicles. After track
+`preview_track_removal` identifies the exact terminal target without mutation.
+Pass its `target` as `expected_target` to `remove_terminal_piece` (or
+`undo_last_piece`) to reject a changed target/count. This does not reserve the
+segment or prove the game will permit removal. It does not detect every interior
+edit. `remove_terminal_piece` is the explicitly named alias, not historical undo.
+
+Close the ride with `close_ride` before editing or changing vehicles. Closing
+alone need not remove trains. Before substantial track revision, explicitly call
+`reset_ride` on the closed, guest-free ride and check `vehicles_cleared`. This uses
+the game's second-close behaviour, which can also clear crash/test state, without
+removing track. A nonzero or unknown guest count is rejected. Never double-close
+as a blind retry of an unknown outcome. After track
 edits, OpenRCT2 may invalidate station entrance/exit assignments. Call
 `place_entrance_exit` again as needed before testing. This tool chooses positions
 near the first station; it does not build connecting paths or guarantee guest
@@ -114,16 +153,60 @@ access. Multiple-station operation is not supported.
 2. Call `start_ride_test`, then poll `get_ride_stats`.
 3. Check pause state, moving trains and `ratings_available`. A closed circuit
    alone does not prove operation. Ratings are null until calculated.
-4. Close the ride, revise as needed, restore entrance/exit assignments and test
+4. Close the ride, explicitly reset vehicles when preparing for substantial
+   revision, revise as needed, restore entrance/exit assignments and test
    again. Choose revisions based on the user's design goals and observed stats.
+
+`get_ride_test_report` collects readiness checks and current telemetry without
+starting, closing or unpausing anything. An optional 0–60 second window observes
+movement (subject to client timeouts). `success` means the read succeeded;
+`ready` means the evidence checks passed. Missing motion is not proof of a stall.
+Station entrance/exit presence is checked, but guest path connectivity is not.
+The report retains timed `observations` with head-car status, sprite position,
+track-block location and raw G-forces when available. Sampling can miss peaks;
+raw G-force values are not the decimal ride maxima. Do not infer a full speed or
+force profile or a definite stall cause from these samples.
+
+Use `get_ride_station_access` to inspect station buildings and bounded nearby
+paths, including edges, slopes, height layers, queue assignments and ghosts.
+`guest_access: unknown` is deliberate: adjacency does not establish connectivity.
+`get_park_status` is a read-only park/objective/research summary, not a park-control
+or independent objective-certification tool.
 
 Ratings use the game's decimal scale (for example 6.52). Train velocities are
 raw game values, not mph or km/h. `set_ride_vehicles` requests train/car counts;
 the game may limit them. Instantiated car counts are reported in ride stats.
 
+## Guest operation and checkpoints
+
+Testing is not guest operation. Discover modern path objects with `get_path_objects`
+and inspect paths with `get_path_area` and `get_ride_station_access`. Use
+`place_path_tile` only for authorized flat, dry ground-level routes. Existing paths
+and scenery cannot be replaced or cleared; overhead track still requires game
+clearance. The game updates neighbor edges and queue assignments. These effects
+can extend beyond returned observations. For authorized removal, pass the exact
+current observation to `remove_path_tile`; slopes, ghosts and path additions are
+not supported for removal. A matching observation is not a reservation.
+
+Use `open_ride` for normal opening, then observe `get_ride_guest_report`. Customer
+completion interpretation is validated only for wooden coasters on OpenRCT2
+0.5.7. Counter progress does not trace individual guests or prove public-network
+connectivity; no progress is not proof of an access failure. Inspect queue
+assignment, reciprocal edges and the intended exit route separately. Do not
+infer that any nearby non-queue path is connected to the park entrance.
+
+`save_park(label)` requests a fresh UUID-named checkpoint, not an overwrite of a
+chosen save path. The game's API does not confirm disk persistence: verify the
+file before relying on it. Preserve the returned filename on an unknown outcome,
+and never automatically repeat a save request. No tool here loads a park or
+resets the game.
+
 ## Current limits
 
 Ride-specific availability remains unknown. Diagonals, inversions, arbitrary
-endpoint selection, multiple-station operation and guest path construction are
-not supported by this workflow. Keep design decisions with the agent, and ask
-the user before discarding park work or using destructive tools.
+endpoint selection, multiple-station operation, sloped/elevated path construction
+and general public-network pathfinding are not supported by this workflow. Keep design decisions with the agent. Normal
+revision of track created for the current task is part of building, unless the
+user limits it. Preserve pre-existing work and any protected track prefixes.
+Ask before deleting pre-existing rides, discarding pre-existing park work, or
+resetting the park.

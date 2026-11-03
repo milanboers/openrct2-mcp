@@ -11,6 +11,8 @@ from typing import Any
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 
+from openrct2_mcp.client_helpers import call_json as call
+
 ROOT = Path(__file__).resolve().parent.parent
 
 # A small closed circuit tested in the bundled sandbox. The agent skill has
@@ -37,19 +39,6 @@ TRACK = (
         "Flat",
     ]
 )
-
-
-async def call(client: Client, tool_name: str, *, allow_failure: bool = False, **arguments: Any) -> Any:
-    result = await client.call_tool(tool_name, arguments)
-    for block in result.content:
-        if block.type == "text":
-            value = json.loads(block.text)
-            if isinstance(value, dict) and value.get("success") is False and not allow_failure:
-                raise RuntimeError(f"{tool_name} failed: {json.dumps(value)}")
-            return value
-    if tool_name == "list_all_rides" and not result.content and not result.is_error:
-        return []
-    raise RuntimeError(f"{tool_name} returned no text result")
 
 
 async def verify_endpoints(client: Client) -> None:
@@ -106,10 +95,58 @@ async def verify_collisions(client: Client) -> None:
     print("Same-ride collision query and placement rejected without changing track.", flush=True)
 
 
-async def run(timeout: float, check_endpoints: bool = False, check_collisions: bool = False) -> None:
-    transport = StdioTransport(
-        command="uv", args=["--directory", str(ROOT), "run", "--locked", "openrct2-mcp"]
-    )
+async def verify_revision_api(client: Client) -> None:
+    """Verify guards and option readback on a new ride, without touching existing rides."""
+    catalog = await call(client, "get_loaded_ride_objects", ride_type=52)
+    if not catalog.get("objects"):
+        raise RuntimeError("No loaded wooden coaster object was discovered")
+    state = await call(client, "create_ride", name="Revision API probe", station_x=100, station_y=100,
+                       station_z=30, ride_object=catalog["objects"][0]["index"], include_image=False, compact=True)
+    ride_id = state["ride_id"]
+    state = await call(client, "place_track_segment", ride_id=ride_id, track_type="Flat",
+                       include_image=False, compact=True, expected_endpoint=state["current_endpoint"])
+    queried = await call(client, "check_track_candidates", ride_id=ride_id,
+                         candidates=[{"track_type": "Flat"}, {"track_type": "Up60"}])
+    if len(queried["results"]) != 2 or queried["results"][1]["success"] is not False:
+        raise RuntimeError(f"Independent candidate query contract failed: {queried}")
+    preview = await call(client, "preview_track_removal", ride_id=ride_id)
+    stale_target = {**preview["target"], "piece_count": preview["target"]["piece_count"] + 1}
+    rejected = await call(client, "remove_terminal_piece", ride_id=ride_id, expected_target=stale_target,
+                          include_image=False, compact=True, allow_failure=True)
+    if rejected.get("operation_outcome") != "rejected" or rejected.get("piece_count") != state["piece_count"]:
+        raise RuntimeError(f"Stale removal was not safely rejected: {rejected}")
+    state = await call(client, "remove_terminal_piece", ride_id=ride_id, expected_target=preview["target"],
+                       include_image=False, compact=True)
+    stale_endpoint = {**state["current_endpoint"], "x": state["current_endpoint"]["x"] + 1}
+    rejected = await call(client, "place_track_segment", ride_id=ride_id, track_type="Flat",
+                          expected_endpoint=stale_endpoint, include_image=False, compact=True, allow_failure=True)
+    if rejected.get("operation_outcome") != "rejected" or rejected.get("piece_count") != state["piece_count"]:
+        raise RuntimeError(f"Stale append was not safely rejected: {rejected}")
+    await call(client, "place_track_segment", ride_id=ride_id, track_type="Flat",
+               expected_endpoint=state["current_endpoint"], include_image=False, compact=True)
+    await call(client, "place_track_sequence", ride_id=ride_id, include_image=False, compact=True, segments=[
+        {"track_type": "FlatToUp25", "has_chain_lift": True},
+        {"track_type": "Up25ToFlat", "has_chain_lift": True},
+        {"track_type": "Brakes", "brake_speed": 12},
+    ])
+    observed = await call(client, "get_coaster_state", ride_id=ride_id, include_image=False)
+    if observed["pieces"][-3]["options"]["has_chain_lift"] is not True:
+        raise RuntimeError(f"Chain flag readback failed on temporary ride {ride_id}")
+    if observed["pieces"][-1]["options"]["brake_speed"] != 12:
+        raise RuntimeError(f"Brake setting readback failed on temporary ride {ride_id}: {observed['pieces'][-1]}")
+    await call(client, "delete_ride", ride_id=ride_id)
+    print("Loaded object selection, compact output, candidate queries, guarded append/removal and option readback checked.",
+          flush=True)
+
+
+async def run(
+    timeout: float, check_endpoints: bool = False, check_collisions: bool = False,
+    check_revision_api: bool = False, metrics_file: Path | None = None,
+) -> None:
+    args = ["--directory", str(ROOT), "run", "--locked", "openrct2-mcp"]
+    if metrics_file is not None:
+        args.extend(["--metrics-file", str(metrics_file)])
+    transport = StdioTransport(command="uv", args=args, keep_alive=False)
     async with Client(transport) as client:
         rides = await call(client, "list_all_rides")
         if rides:
@@ -118,10 +155,17 @@ async def run(timeout: float, check_endpoints: bool = False, check_collisions: b
         info = await call(client, "get_plugin_info")
         if not info.get("matches") or not info.get("protocol_compatible"):
             raise RuntimeError(f"Plugin/server mismatch: {json.dumps(info)}")
+        park = await call(client, "get_park_status")
+        if park.get("park_name") != "sandbox" or park.get("game_mode") != "normal" or park.get("game_paused") is not False:
+            raise RuntimeError("Load and unpause the intended sandbox before running the smoke test")
+
         if check_endpoints:
             await verify_endpoints(client)
         if check_collisions:
             await verify_collisions(client)
+
+        if check_revision_api:
+            await verify_revision_api(client)
 
         state = await call(client, "create_ride", name="MCP Smoke Test")
         ride_id = state["ride_id"]
@@ -150,6 +194,9 @@ async def run(timeout: float, check_endpoints: bool = False, check_collisions: b
         closed = await call(client, "get_ride_stats", ride_id=ride_id)
         if closed.get("ride_status") != "closed":
             raise RuntimeError(f"Ride did not close: {json.dumps(closed)}")
+        reset = await call(client, "reset_ride", ride_id=ride_id)
+        if reset.get("vehicles_cleared") is not True:
+            raise RuntimeError(f"Vehicle reset was not established: {json.dumps(reset)}")
         await call(client, "undo_last_piece", ride_id=ride_id)
         revised = await call(client, "place_track_segment", ride_id=ride_id, track_type="Flat")
         if not revised.get("is_circuit_complete") or revised.get("endpoint_prediction_mismatches"):
@@ -158,6 +205,11 @@ async def run(timeout: float, check_endpoints: bool = False, check_collisions: b
         await call(client, "place_entrance_exit", ride_id=ride_id)
         await call(client, "start_ride_test", ride_id=ride_id)
         stats = await wait_for_ratings(client, ride_id, timeout)
+        if check_revision_api:
+            report = await call(client, "get_ride_test_report", ride_id=ride_id, observe_seconds=5)
+            if not report["checks"]["ratings_available"] or not report["checks"]["closed_circuit"]:
+                raise RuntimeError(f"Test report did not match observed operation: {report}")
+            print(f"Read-only test report: ready={report['ready']}, samples={report['sample_count']}", flush=True)
         print(f"Smoke test passed (including close/edit/retest): {json.dumps(stats)}", flush=True)
 
 
@@ -181,6 +233,9 @@ def main() -> int:
                         help='also build and delete temporary rides to check all four cardinal rotations')
     parser.add_argument('--check-collisions', action='store_true',
                         help='also build and delete a temporary ride to verify same-ride collision rejection')
+    parser.add_argument('--check-revision-api', action='store_true',
+                        help='also check compact output, loaded objects, queries, guards and option readback')
+    parser.add_argument('--metrics-file', type=Path, help='new JSONL file for this smoke server process')
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
@@ -189,7 +244,8 @@ def main() -> int:
         if answer.strip().lower() not in ("y", "yes"):
             print("Cancelled.")
             return 1
-        asyncio.run(run(args.timeout, args.check_endpoints, args.check_collisions))
+        asyncio.run(run(args.timeout, args.check_endpoints, args.check_collisions,
+                        args.check_revision_api, args.metrics_file))
     except (EOFError, KeyboardInterrupt):
         print("\nCancelled.", file=sys.stderr)
         return 1

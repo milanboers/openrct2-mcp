@@ -230,11 +230,11 @@ class TestPlaceTrackSequence:
 
             result = place_track_sequence(1, segments)
 
-            assert result == [{'success': True, 'operation_outcome': 'confirmed', 'placed_count': 2}, 'image']
+            assert result == [{'success': True, 'operation_outcome': 'confirmed', 'execution_status': 'completed', 'state_status': 'available', 'placed_count': 2}, 'image']
             assert place.call_count == 2
             assert place.call_args_list[1].kwargs['tile_coordinate_x'] == 9
             assert place.call_args_list[1].kwargs['has_chain_lift'] is True
-            final.assert_called_once_with(1)
+            final.assert_called_once_with(1, include_image=True, compact=False)
 
     def test_sequence_reports_mismatch_even_when_later_piece_fails(self) -> None:
         from openrct2_mcp.api_client import APIError
@@ -281,7 +281,7 @@ class TestPlaceTrackSequence:
                 'complete': 'Circuit is already complete',
             }[failure]
             assert place.call_count == (2 if failure == 'placement' else 1)
-            final.assert_called_once_with(1)
+            final.assert_called_once_with(1, include_image=True, compact=False)
 
 
 class TestUndoLastPiece:
@@ -377,18 +377,20 @@ class TestCoasterTools:
             'ride_id': 1, 'setting': 'trains', 'value': 2,
         }) as set_vehicles:
             assert set_ride_vehicles(1, 'trains', 2) == {
-                'success': True, 'operation_outcome': 'confirmed', 'ride_id': 1, 'setting': 'trains', 'value': 2,
+                'success': True, 'operation_outcome': 'confirmed', 'execution_status': 'completed',
+                'state_status': 'not_requested', 'ride_id': 1, 'setting': 'trains', 'value': 2,
             }
             set_vehicles.assert_called_once_with(1, 'trains', 2)
 
     def test_delete_ride(self) -> None:
         with patch.object(api_client, 'delete_ride', return_value={'rideId': 1}) as delete:
-            assert delete_ride(1) == {'success': True, 'ride_id': 1, 'operation_outcome': 'confirmed'}
+            assert delete_ride(1) == {'success': True, 'ride_id': 1, 'operation_outcome': 'confirmed',
+                                      'execution_status': 'completed', 'state_status': 'not_requested'}
             delete.assert_called_once_with(1)
 
     def test_get_plugin_info(self) -> None:
-        with patch.object(api_client, 'get_plugin_info', return_value={'version': '0.10.0', 'protocol_version': 1}):
-            assert get_plugin_info() == {'version': '0.10.0', 'expected_version': '0.10.0', 'matches': True,
+        with patch.object(api_client, 'get_plugin_info', return_value={'version': '0.13.0', 'protocol_version': 1}):
+            assert get_plugin_info() == {'version': '0.13.0', 'expected_version': '0.13.0', 'matches': True,
                                          'protocol_version': 1, 'expected_protocol_version': 1, 'protocol_compatible': True}
 
     def test_list_rides_failure_is_not_empty_list(self) -> None:
@@ -476,6 +478,8 @@ def test_confirmed_placement_with_failed_state_read_retains_outcome():
     assert result['success'] is False
     assert result['operation_outcome'] == 'confirmed'
     assert result['state_error'] == 'Disconnected'
+    assert result['execution_status'] == 'completed'
+    assert result['state_status'] == 'unavailable'
 
 
 def test_compact_snapshot_uses_one_request_and_skips_rendering():
@@ -558,7 +562,8 @@ def test_endpoint_view_returns_world_context_and_navigation_metadata():
     map_area.assert_called_once_with(9, 10, 0)
 
 
-def test_elevation_view_uses_only_ride_snapshot():
+@pytest.mark.parametrize('compact', [False, True])
+def test_elevation_view_uses_only_ride_snapshot(compact):
     from openrct2_mcp.mcp_server import get_coaster_view
 
     snapshot = {'layoutStatus': 'complete', 'history': [
@@ -569,7 +574,7 @@ def test_elevation_view_uses_only_ride_snapshot():
     ]}
     with patch.object(api_client, 'get_coaster_state', return_value=snapshot), \
          patch.object(api_client, 'get_map_area') as map_area:
-        summary, image = get_coaster_view(7, view='elevation')
+        summary, image = get_coaster_view(7, view='elevation', compact=compact)
 
     assert summary['success'] is True
     assert summary['sample_count'] == 3

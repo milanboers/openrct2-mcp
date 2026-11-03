@@ -115,14 +115,15 @@ def test_broken_response_discards_connection_without_retry(response):
     local, peer = socket.socketpair()
     local.settimeout(0.02)
     client._sock = local
-    client._file_obj = local.makefile('r')
+    client._file_obj = local.makefile('rb')
+    client._compatible = True  # Exercise transport after a successful compatibility preflight.
     try:
         if response:
             peer.sendall(response)
         if response == b'':
             peer.shutdown(socket.SHUT_WR)
         with pytest.raises(APIError) as failure:
-            client.delete_ride(7)
+            client._send_request('deleteRide', {'rideId': 7}, timeout=0.02)
 
         assert failure.value.outcome == 'unknown'
         assert client._sock is None
@@ -139,14 +140,112 @@ def test_game_rejection_preserves_connection_and_error():
     client = OpenRCT2API()
     local, peer = socket.socketpair()
     client._sock = local
-    client._file_obj = local.makefile('r')
+    client._file_obj = local.makefile('rb')
+    client._compatible = True  # Exercise transport after a successful compatibility preflight.
     try:
-        peer.sendall(b'{"success":false,"error":"Ride must be closed"}\n')
+        peer.sendall(b'{"success":false,"error":"Ride must be closed","error_details":{"code":9,"message":"Closed"}}\n')
         with pytest.raises(APIError, match='Ride must be closed') as failure:
             client.delete_ride(7)
 
         assert failure.value.outcome == 'rejected'
+        assert failure.value.details == {'endpoint': 'deleteRide', 'code': 9, 'message': 'Closed'}
         assert client._sock is local
     finally:
         client._close_connection()
         peer.close()
+
+
+def test_guarded_placement_uses_append_endpoint_and_forwards_preconditions():
+    client = OpenRCT2API()
+    position = {'x': 66, 'y': 66, 'z': 14, 'direction': 0}
+    with patch.object(client, '_send_request', return_value={}) as send:
+        client.place_track_piece(7, 66, 66, 14, 0, 0, 52,
+                                expected_endpoint=position, expected_piece_count=3)
+
+    assert send.call_args.args[0] == 'appendTrackPiece'
+    assert send.call_args.args[1]['expectedEndpoint'] == position
+    assert send.call_args.args[1]['expectedPieceCount'] == 3
+    assert send.call_args.args[1]['isFromTrackDesign'] is False
+
+
+def test_removal_preview_and_guard_use_separate_endpoints():
+    client = OpenRCT2API()
+    target = {'x': 66, 'y': 66, 'z': 14, 'direction': 0, 'track_type': 0, 'base_z_game': 112, 'piece_count': 3}
+    with patch.object(client, '_send_request', side_effect=[{'target': target}, {}]) as send:
+        preview = client.preview_track_removal(7)
+        client.delete_last_track_piece(7, expected_target=preview['target'])
+
+    assert send.call_args_list[0].args == ('previewTrackRemoval', {'rideId': 7})
+    assert send.call_args_list[1].args == ('deleteLastTrackPiece', {'rideId': 7, 'expectedTarget': target})
+
+
+def test_response_limit_counts_utf8_bytes_and_discards_the_oversized_connection():
+    import json
+    import socket
+
+    response = (json.dumps({'success': True, 'payload': {'name': 'café'}}, ensure_ascii=False) + '\n').encode('utf-8')
+    local, peer = socket.socketpair()
+    client = OpenRCT2API()
+    client._sock = local
+    client._file_obj = local.makefile('rb')
+    try:
+        peer.sendall(response + response)
+
+        assert client.get_plugin_info() == {'name': 'café'}
+        with patch('openrct2_mcp.api_client.MAX_RESPONSE_BYTES', len(response) - 1):
+            with pytest.raises(APIError, match='exceeds') as failure:
+                client.get_plugin_info()
+
+        assert failure.value.outcome == 'unknown'
+        assert client._sock is None and client._file_obj is None
+    finally:
+        client.close()
+        peer.close()
+
+
+@pytest.mark.parametrize('info', [
+    {'version': '0.12.0', 'protocol_version': 1},
+    {'version': '0.13.0', 'protocol_version': 2},
+    {'version': '0.13.0', 'protocol_version': True},
+    {},
+])
+def test_mutation_refuses_incompatible_connection_before_sending_action(info):
+    client = OpenRCT2API()
+    with patch.object(client, '_exchange', return_value=info) as exchange:
+        with pytest.raises(APIError, match='compatibility') as failure:
+            client.delete_ride(7)
+
+    assert failure.value.outcome == 'rejected'
+    assert failure.value.details == {'category': 'compatibility', 'endpoint': 'deleteRide'}
+    exchange.assert_called_once_with('getPluginInfo', {}, 5.0)
+
+
+def test_compatible_connection_checks_once_and_rechecks_after_disconnect():
+    client = OpenRCT2API()
+    with patch.object(client, '_exchange', side_effect=[
+        {'version': '0.13.0', 'protocol_version': 1}, {}, {},
+        {'version': '0.12.0', 'protocol_version': 1},
+    ]) as exchange:
+        client.delete_ride(7)
+        client.delete_ride(8)
+        client.close()
+        with pytest.raises(APIError, match='compatibility'):
+            client.delete_ride(9)
+
+    assert [call.args[0] for call in exchange.call_args_list] == [
+        'getPluginInfo', 'deleteRide', 'deleteRide', 'getPluginInfo',
+    ]
+
+
+def test_preflight_transport_failure_rejects_unsent_mutation_but_keeps_diagnostics_available():
+    client = OpenRCT2API()
+    with patch.object(client, '_exchange', side_effect=[
+        APIError('Disconnected', outcome='unknown'), {'version': 'old'},
+    ]) as exchange:
+        with pytest.raises(APIError) as failure:
+            client.open_ride(7)
+        info = client.get_plugin_info()
+
+    assert failure.value.outcome == 'rejected'
+    assert info == {'version': 'old'}
+    assert [call.args[0] for call in exchange.call_args_list] == ['getPluginInfo', 'getPluginInfo']

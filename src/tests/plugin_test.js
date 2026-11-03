@@ -270,15 +270,20 @@ map.getRide = (id) => id === 10 ? {
     status: "testing", excitement: -1, intensity: 0, nausea: 0, vehicles: [42, 43, 65535],
 } : null;
 map.getEntity = (id) => ({
-    42: { id: 42, velocity: 1234, nextCarOnTrain: 44 },
+    42: { id: 42, velocity: 1234, nextCarOnTrain: 44, x: 320, y: 352, z: 120, status: "travelling",
+        trackLocation: { x: 320, y: 352, z: 112, direction: 0, trackType: 4 },
+        trackProgress: 6, gForces: { lateralG: -80, verticalG: 250 } },
     44: { id: 44, nextCarOnTrain: null },
 })[id] || null;
 context.paused = true;
 let stats = request("getRideStats", { rideId: 10 });
 assert(JSON.stringify(stats.payload) === JSON.stringify({
-    ride_status: "testing", game_paused: true, ratings_available: false,
+    ride_status: "testing", game_paused: true, observed_game_tick: null, total_customers: null, guest_count: null,
+    ratings_available: false,
     excitement: null, intensity: null, nausea: null,
-    vehicles: [{ id: 42, velocity: 1234, cars: 2 }],
+    vehicles: [{ id: 42, velocity: 1234, cars: 2, status: "travelling", position: { x: 10, y: 11, z: 15 },
+        track_location: { x: 10, y: 11, z: 14, direction: 0, track_type: 4 }, track_progress: 6,
+        g_forces_raw: { lateral: -80, vertical: 250 } }],
     max_speed_mph: null, average_speed_mph: null, ride_time_seconds: null, ride_length_metres: null,
     max_positive_vertical_g: null, max_negative_vertical_g: null, max_lateral_g: null, drops: null, lift_hills: null,
 }), "uncalculated ratings include test diagnostics and vehicle velocities");
@@ -288,7 +293,8 @@ map.getRide = () => ({ status: "open", excitement: 652, intensity: 430, nausea: 
 context.paused = false;
 stats = request("getRideStats", { rideId: 10 });
 assert(JSON.stringify(stats.payload) === JSON.stringify({
-    ride_status: "open", game_paused: false, ratings_available: true,
+    ride_status: "open", game_paused: false, observed_game_tick: null, total_customers: null, guest_count: null,
+    ratings_available: true,
     excitement: 6.52, intensity: 4.3, nausea: 0, vehicles: [],
     max_speed_mph: 45, average_speed_mph: 20, ride_time_seconds: 60, ride_length_metres: 300,
     max_positive_vertical_g: 3.2, max_negative_vertical_g: -0.5, max_lateral_g: 1.1, drops: 2, lift_hills: 1,
@@ -535,6 +541,234 @@ assert(request("placeTrackPiece", trackArgs).error === "Failed to place track pi
     "placement preserves the game's error title and message");
 actionHandlers.ridedemolish = (args, cb) => cb({ error: 1, errorMessage: "Demolition refused" });
 assert(request("deleteAllRides").outcome === "partial", "bulk demolition surfaces failures");
+
+// Guarded append resolves the live endpoint, never the caller's placement coordinates.
+clearTiles();
+const guarded = [makeTrack(31, 30, 2, 0, 112), makeTrack(30, 30, 0, 0, 112)];
+linkSeq(guarded);
+for (const el of guarded) place(7, el);
+guarded[1].hasChainLift = true;
+Object.defineProperty(guarded[1], 'brakeBoosterSpeed', { get() {
+    throw new Error('Speed getter is inapplicable to Flat');
+} });
+guarded[1].seatRotation = 3;
+guarded[1].colourScheme = 0;
+guarded[1].hasCableLift = false;
+guarded[1].isInverted = false;
+const guardedState = request("getCoasterState", { rideId: 7 }).payload;
+assert(guardedState.history[1].options.has_chain_lift === true &&
+    guardedState.history[1].options.brake_speed === null && guardedState.history[1].options.seat_rotation === 3,
+    "snapshot reads actual construction options, not placement defaults");
+let appendActions = 0;
+let appendArgs = null;
+actionHandlers.trackplace = (args, cb) => {
+    appendActions++;
+    appendArgs = args;
+    cb({ error: 9, errorTitle: "Cannot build", errorMessage: "Track is obstructed" });
+};
+const appendRequest = { ...trackArgs, ride: 7, trackType: 0, expectedEndpoint: guardedState.position,
+    expectedPieceCount: 2, isFromTrackDesign: true };
+assert(request("appendTrackPiece", { ...appendRequest, expectedEndpoint: { ...guardedState.position, x: 99 } })
+    .error_details.category === "stale_endpoint" && appendActions === 0, "stale append endpoint cannot mutate");
+assert(!request("appendTrackPiece", { ...appendRequest, expectedPieceCount: 99 }).success && appendActions === 0,
+    "stale append piece count cannot mutate");
+assert(!request("appendTrackPiece", { ...appendRequest, trackType: 4 }).success && appendActions === 0,
+    "append rejects unsupported connections before submitting an action");
+const appendFailure = request("appendTrackPiece", appendRequest);
+assert(appendActions === 1 && appendArgs.x === guardedState.position.x * 32 && !appendArgs.isFromTrackDesign,
+    "append resolves placement from live state and always uses normal construction mode");
+assert(appendFailure.error_details.code === 9 && appendFailure.error_details.message === "Track is obstructed",
+    "append preserves structured game errors");
+
+// Preview and guarded removal share exact element selection.
+exactRemove = null;
+const preview = request("previewTrackRemoval", { rideId: 7 });
+assert(preview.success && preview.payload.target.piece_count === 2 &&
+    preview.payload.target.base_z_game === 112 && exactRemove === null, "removal preview does not execute an action");
+assert(!request("deleteLastTrackPiece", { rideId: 7,
+    expectedTarget: { ...preview.payload.target, piece_count: 99 } }).success && exactRemove === null,
+    "stale removal preview cannot mutate");
+assert(request("deleteLastTrackPiece", { rideId: 7, expectedTarget: preview.payload.target }).success && exactRemove.z === 112,
+    "matching removal guard selects the previewed element");
+
+context.getAllObjects = type => [{ index: 3, identifier: "test.wooden", name: "Wooden trains", rideType: [52],
+    minCarsInTrain: 2, maxCarsInTrain: 6 }];
+const objects = request("getLoadedRideObjects").payload;
+assert(objects[0].index === 3 && objects[0].ride_types[0] === 52 && objects[0].track_support === "unknown",
+    "loaded ride object discovery keeps track support unknown");
+
+// A rejected create action must not be mistaken for a successful ride ID.
+let namingCalls = 0;
+actionHandlers.ridecreate = (args, cb) => cb({ ride: 0, error: 9, errorMessage: "Creation refused" });
+actionHandlers.ridesetname = (args, cb) => { namingCalls++; cb({ error: 1, errorMessage: "Name refused" }); };
+const createParams = { rideType: 52, rideObject: 65535, entranceObject: 0, colour1: 0, colour2: 0,
+    inspectionInterval: 2, name: "Test name" };
+const rejectedCreation = request("createRide", createParams);
+assert(!rejectedCreation.success && rejectedCreation.outcome === "rejected" && namingCalls === 0,
+    "failed creation with an incidental ride ID never renames that ride");
+actionHandlers.ridecreate = (args, cb) => cb({ ride: 7 });
+const namingFailure = request("createRide", createParams);
+assert(namingFailure.payload.rideId === 7 && namingFailure.payload.nameOutcome === "rejected" &&
+    namingFailure.payload.nameWarning.indexOf("Name refused") !== -1, "creation preserves partial naming failure");
+actionHandlers.ridecreate = (args, cb) => cb(null);
+assert(request("createRide", createParams).outcome === "unknown", "missing creation acknowledgement remains unknown");
+
+// Reset is an explicit second-close action, not an implicit close/retry.
+let resetActions = 0;
+const resetFixture = { status: "testing", guestCount: 0, vehicles: [42] };
+map.getRide = id => id === 7 ? resetFixture : null;
+map.getEntity = id => id === 42 ? { id: 42 } : null;
+actionHandlers.ridesetstatus = (args, cb) => { resetActions++; resetFixture.vehicles = []; cb({}); };
+assert(!request("resetRide", { rideId: 7 }).success && resetActions === 0,
+    "reset rejects a running ride without closing it");
+resetFixture.status = "closed";
+resetFixture.guestCount = 1;
+assert(!request("resetRide", { rideId: 7 }).success && resetActions === 0,
+    "reset refuses to remove guests");
+resetFixture.guestCount = 0;
+const resetResult = request("resetRide", { rideId: 7 });
+assert(resetResult.success && resetResult.payload.vehicles_cleared && resetActions === 1,
+    "reset on a closed empty ride submits one action and observes vehicle clearance");
+actionHandlers.ridesetstatus = (args, cb) => cb(null);
+assert(request("resetRide", { rideId: 7 }).outcome === "unknown", "reset preserves an unknown acknowledgement");
+actionHandlers.ridesetstatus = (args, cb) => cb({});
+// Allow the initial guard, then fail inspection after the acknowledged action.
+map.getRide = () => resetFixture;
+actionHandlers.ridesetstatus = (args, cb) => {
+    map.getRide = () => { throw new Error("Post-reset inspection unavailable"); };
+    cb({});
+};
+const resetReadFailure = request("resetRide", { rideId: 7 });
+assert(resetReadFailure.success && resetReadFailure.payload.vehicles_cleared === null &&
+    resetReadFailure.payload.state_error.indexOf("Post-reset") !== -1,
+    "an acknowledged reset survives a subsequent inspection failure");
+
+// Park, research and station observations never execute actions.
+let readMutations = 0;
+const executeBeforeReads = context.executeAction;
+context.executeAction = (...args) => { readMutations++; executeBeforeReads(...args); };
+global.park = { name: "Read-only park", cash: 1200, bankLoan: 500, maxBankLoan: 1000, entranceFee: 0,
+    rating: 600, guests: 42, value: 2000, companyValue: 2700, getFlag: flag => flag === "open",
+    research: { funding: 2, priorities: ["rollercoaster"], stage: "designing", progress: 123,
+        inventedItems: [{ type: "ride", object: 3, rideType: 52 }],
+        uninventedItems: [{ type: "ride", object: 3, rideType: 51 }] } };
+global.scenario = { name: "Guest target", status: "inProgress", objective: { type: "guestsBy", guests: 500, year: 3 } };
+global.date = { day: 1, month: 0, year: 1, monthsElapsed: 0, ticksElapsed: 1234 };
+context.mode = "normal";
+context.gameSpeed = 0;
+const parkStatus = request("getParkStatus").payload;
+assert(parkStatus.park.cash_raw === 1200 && parkStatus.park.guests === 42 && parkStatus.park.open &&
+    parkStatus.scenario.objective.guests === 500 && parkStatus.scenario.status === "inProgress" &&
+    parkStatus.research.invented_count === 1 && parkStatus.observed_game_tick === 1234,
+    "park summary observes finances, objective, research and game tick without interpreting success");
+context.mode = "title";
+assert(!request("getParkStatus").success, "park summary requires normal game mode");
+context.mode = "normal";
+context.getAllObjects = () => [{ index: 3, identifier: "test.multi", name: "Multi", rideType: [52, 51, 17, 255, 52] }];
+const researched = request("getLoadedRideObjects").payload[0];
+assert(JSON.stringify(researched.research.map(r => r.status)) === JSON.stringify(["invented", "uninvented", "unknown"])
+    && researched.track_support === "unknown", "research is per ride type/object pair, separate from track support");
+clearTiles();
+const stationRide = { id: 7, type: 52, stations: [
+    { start: { x: 320, y: 352, z: 112 }, length: 3,
+        entrance: { x: 320, y: 320, z: 112, direction: 1 },
+        exit: { x: -32768, y: 0, z: 0, direction: 0 } },
+    { start: null },
+] };
+map.getRide = id => id === 7 ? stationRide : null;
+map.rides.forEach = fn => fn(stationRide);
+tiles.set("10,10", [{ type: "footpath", baseZ: 112, clearanceZ: 128, edges: 5, slopeDirection: null,
+    isQueue: true, ride: 7, station: 0, isGhost: false, surfaceObject: 2, railingsObject: 3, object: null },
+    { type: "footpath", baseZ: 144, clearanceZ: 160, edges: 1, slopeDirection: 2, isQueue: false,
+        ride: null, station: null, isGhost: true }]);
+const ordinaryPath = tiles.get("10,10")[1];
+Object.defineProperties(ordinaryPath, {
+    ride: { get() { throw new Error("Non-queue paths have no ride assignment"); } },
+    station: { get() { throw new Error("Non-queue paths have no station assignment"); } },
+});
+const access = request("getRideStationAccess", { rideId: 7, radius: 1 }).payload;
+assert(access.stations.length === 1 && access.stations[0].entrance.position.y === 10 &&
+    access.stations[0].exit.status === "absent" && access.stations[0].start.position.z === 14,
+    "station coordinates are normalized and null station/entrance sentinels are not treated as present");
+assert(access.paths.length === 2 && access.paths[0].edges === 5 && access.paths[0].ride_id === 7 &&
+    access.paths[1].is_ghost && access.paths[1].base_z === 18 && access.guest_access === "unknown",
+    "bounded paths preserve heights, queue edges and ghosts without claiming connectivity");
+assert(request("getRideStationAccess", { rideId: 999, radius: 1 }).error === "Ride not found" &&
+    !request("getRideStationAccess", { rideId: 7, radius: 5 }).success, "station inspection bounds inputs");
+const stationState = request("getCoasterState", { rideId: 7 }).payload;
+assert(stationState.stations[0].entrance.status === "present" && stationState.stations[0].exit.status === "absent",
+    "coaster snapshots retain station building observations for acceptance checks");
+clearTiles();
+const brakeElement = makeTrack(10, 10, 99, 0, 112);
+brakeElement.brakeBoosterSpeed = 12;
+place(7, brakeElement);
+assert(request("getCoasterState", { rideId: 7 }).payload.history[0].options.brake_speed === 12,
+    "Brakes speed readback remains available without reading the getter on other types");
+assert(researched.ride_types.length === 3, "ride object types omit null sentinels and duplicates");
+assert(readMutations === 0, "park, research, station and state reads execute no game actions");
+
+// Guest-operation regressions: building directions and conservative path edits.
+context.executeAction = executeBeforeReads;
+clearTiles();
+const directionRide = { id: 7, type: 52, stations: [] };
+map.rides.forEach = fn => fn(directionRide);
+map.getRide = () => directionRide;
+place(7, makeTrack(10, 10, 1, 0, 112));
+const buildingArgs = [];
+actionHandlers.rideentranceexitplace = (args, cb) => { buildingArgs.push(args); cb({}); };
+assert(request("placeEntranceExit", { rideId: 7 }).success && buildingArgs.length === 2 &&
+    buildingArgs[0].direction === 1 && buildingArgs[1].direction === 3,
+    "east-west station buildings face toward the station so external paths can connect");
+clearTiles();
+context.getAllObjects = type => type === "footpath_surface" ? [{ index: 2, identifier: "surface", name: "Surface", flags: 0 }] :
+    [{ index: 3, identifier: "railings", name: "Railings" }];
+const ground = { type: "surface", baseZ: 112, clearanceZ: 112, slope: 0, waterHeight: 0, isGhost: false };
+const overhead = { type: "track", baseZ: 160, clearanceZ: 192, ride: 7 };
+tiles.set("30,30", [ground, overhead]);
+let pathActions = 0;
+actionHandlers.footpathplace = (args, cb) => {
+    pathActions++;
+    assert(args.x === 960 && args.y === 960 && args.z === 112 && args.direction === 255 && args.constructFlags === 1,
+        "flat queue action converts units and avoids directed wall-clearing construction");
+    tiles.get("30,30").push({ type: "footpath", baseZ: 112, clearanceZ: 144, isGhost: false,
+        slopeDirection: null, edges: 0, isQueue: true, ride: 7, station: 0,
+        surfaceObject: 2, railingsObject: 3, object: null, addition: null });
+    cb({ cost: 100 });
+};
+actionHandlers.footpathremove = (args, cb) => {
+    pathActions++; tiles.set("30,30", [ground, overhead]); cb({ cost: -50 });
+};
+const pathParams = { x: 30, y: 30, z: 14, surface_object: 2, railings_object: 3, is_queue: true };
+assert(!request("placePathTile", { ...pathParams, z: 15 }).success && pathActions === 0,
+    "odd path heights reject before game action");
+const pathPlaced = request("placePathTile", pathParams);
+assert(pathPlaced.success && pathPlaced.payload.observed_after.paths[0].ride_id === 7 && pathActions === 1,
+    "ground paths may pass under sufficiently elevated track and retain queue assignment");
+assert(!request("placePathTile", pathParams).success && pathActions === 1, "existing paths cannot be replaced");
+const selectedPath = pathPlaced.payload.observed_after.paths[0];
+const pathElement = tiles.get("30,30")[2];
+pathElement.addition = 0;
+const withAddition = request("getPathArea", { x: 30, y: 30, radius: 0 }).payload.paths[0];
+assert(!request("removePathTile", { x: 30, y: 30, z: 14, expected_path: withAddition }).success && pathActions === 1,
+    "even a matching observation cannot remove a path carrying an addition");
+pathElement.addition = null;
+assert(!request("removePathTile", { x: 30, y: 30, z: 14, expected_path: { ...selectedPath, edges: 1 } }).success && pathActions === 1,
+    "stale path observation rejects removal");
+assert(request("removePathTile", { x: 30, y: 30, z: 14, expected_path: selectedPath }).success && pathActions === 2 &&
+    tiles.get("30,30")[1] === overhead, "guarded removal retains overhead track");
+ground.slope = 1;
+assert(!request("placePathTile", pathParams).success && pathActions === 2, "sloped ground is outside flat-path scope");
+ground.slope = 0; ground.waterHeight = 16;
+assert(!request("placePathTile", pathParams).success && pathActions === 2, "water is outside flat-path scope");
+ground.waterHeight = 0; tiles.get("30,30").push({ type: "small_scenery", baseZ: 112 });
+assert(!request("placePathTile", pathParams).success && pathActions === 2, "path placement never clears scenery");
+const saves = [];
+context.saveGame = options => saves.push(options.filename);
+const saveName = "mcp-contract-0123456789abcdef0123456789abcdef";
+assert(request("savePark", { filename: saveName }).payload.file_written === "unknown" && saves.length === 1,
+    "checkpoint acknowledgement does not claim persistence");
+assert(!request("savePark", { filename: saveName }).success && !request("savePark", { filename: "../existing" }).success && saves.length === 1,
+    "checkpoint rejects reused names and path traversal");
 
 // ---------------------------------------------------------------------------
 
