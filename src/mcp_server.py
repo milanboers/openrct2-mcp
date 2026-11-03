@@ -699,10 +699,10 @@ def get_plugin_info() -> dict[str, Any]:
     """
     try:
         info = api_client.get_plugin_info()
-        return {"version": info.get("version"), "expected_version": "0.7.0",
-                "matches": info.get("version") == "0.7.0"}
+        return {"version": info.get("version"), "expected_version": "0.8.0",
+                "matches": info.get("version") == "0.8.0"}
     except APIError as e:
-        return {"success": False, "error": str(e), "expected_version": "0.7.0"}
+        return {"success": False, "error": str(e), "expected_version": "0.8.0"}
 
 
 @mcp.tool()

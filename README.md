@@ -15,7 +15,7 @@ Three pieces talk to each other:
 ## Tools
 
 - `create_ride`: Create a new coaster and place the first station piece.
-- `place_track_segment`: Add a track segment. `valid_pieces` lists compatible types; the game can still reject a placement due to terrain or obstructions.
+- `place_track_segment`: Add a track segment. `valid_pieces` lists supported cardinal types whose connection shape matches; it does not guarantee ride support or clearance. Diagonal and inverted track are not supported by this filter.
 - `check_track_segment`: Ask the game whether a piece can be placed at the current endpoint without building it. The result is not a reservation or a guarantee of ride support or connectivity.
 - `get_map_area`: Inspect nearby terrain and map elements within a bounded radius.
 - `place_track_sequence`: Place several segments in order, returning one final state and image. Stops at the first failure; earlier segments remain placed, and the failed segment may also have been placed. Inspect the final state before retrying. Each segment accepts `track_type`, `has_chain_lift`, `brake_speed`, and `seat_rotation`.

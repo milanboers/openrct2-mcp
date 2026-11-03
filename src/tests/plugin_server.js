@@ -221,10 +221,10 @@ global.registerPlugin = (p) => {
 global.map = map;
 global.context = {
     getAllTrackSegments: () => [
-        { type: 0, endX: 0, endY: 0, endZ: 0, endDirection: 0, elements: [{ x: 0, y: 0, z: 0 }] },
-        { type: 1, endX: 0, endY: 0, endZ: 0, endDirection: 0, elements: [{ x: 0, y: 0, z: 0 }] },
-        { type: 2, endX: 0, endY: 0, endZ: 0, endDirection: 0, elements: [{ x: 0, y: 0, z: 0 }] },
-        { type: 3, endX: 0, endY: 0, endZ: 0, endDirection: 0, elements: [{ x: 0, y: 0, z: 0 }] },
+        { type: 0, endX: 0, endY: 0, endZ: 0, beginDirection: 0, endDirection: 0, beginSlope: 0, endSlope: 0, beginBank: 0, endBank: 0, elements: [{ x: 0, y: 0, z: 0 }] },
+        { type: 1, endX: 0, endY: 0, endZ: 0, beginDirection: 0, endDirection: 0, beginSlope: 0, endSlope: 0, beginBank: 0, endBank: 0, elements: [{ x: 0, y: 0, z: 0 }] },
+        { type: 2, endX: 0, endY: 0, endZ: 0, beginDirection: 0, endDirection: 0, beginSlope: 0, endSlope: 0, beginBank: 0, endBank: 0, elements: [{ x: 0, y: 0, z: 0 }] },
+        { type: 3, endX: 0, endY: 0, endZ: 0, beginDirection: 0, endDirection: 0, beginSlope: 0, endSlope: 0, beginBank: 0, endBank: 0, elements: [{ x: 0, y: 0, z: 0 }] },
     ],
     executeAction: (name, args, cb) => {
         const h = actionHandlers[name];

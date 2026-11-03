@@ -8,7 +8,7 @@ description: Specialized guidance for building roller coasters in OpenRCT2 using
 This skill provides comprehensive procedural knowledge for building effective and valid roller coasters using the OpenRCT2 Ride Creation MCP server.
 
 ## 🛑 THE GOLDEN RULE 🛑
-You **MUST ONLY** select a `track_type` (its `name`) that appears in the `valid_pieces` list of the **previous** tool response. These are compatible types, not a guarantee that a piece fits: the game may still reject it due to terrain, scenery, or other track.
+You **MUST ONLY** select a `track_type` (its `name`) that appears in the `valid_pieces` list of the **previous** tool response. These are supported cardinal types with matching connection shape, not a guarantee of ride support or clearance. Diagonal and inverted track are not supported by this filter.
 
 ## Ride Types
 

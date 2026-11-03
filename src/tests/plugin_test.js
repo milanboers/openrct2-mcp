@@ -120,19 +120,26 @@ function makeIterator(startEl) {
 const actionHandlers = {};
 
 // Track segment geometry from the game's own catalog (real descriptor values).
-function seg(type, endX, endY, endZ, endDirection) {
-    return { type: type, endX: endX, endY: endY, endZ: endZ, endDirection: endDirection, elements: [{ x: 0, y: 0, z: 0 }] };
+function seg(type, endX, endY, endZ, endDirection, beginSlope = 0, endSlope = 0, beginBank = 0, endBank = 0) {
+    return { type, endX, endY, endZ, beginDirection: 0, endDirection, beginSlope, endSlope, beginBank, endBank,
+        elements: [{ x: 0, y: 0, z: 0 }] };
 }
 const TEST_SEGMENTS = [
-    seg(0, 0, 0, 0, 0), // Flat
-    seg(1, 0, 0, 0, 0), // EndStation
-    seg(2, 0, 0, 0, 0), // BeginStation
-    seg(3, 0, 0, 0, 0), // MiddleStation
-    seg(4, 0, 0, 16, 0), // Up25
-    seg(5, 0, 0, 64, 0), // Up60
-    seg(10, 0, 0, 0, 0), // Down25 (zBegin not exposed; the plugin's adjustment handles the drop)
-    seg(16, -64, -64, 0, 3), // LeftQuarterTurn5Tiles
-    seg(17, -64, 64, 0, 1), // RightQuarterTurn5Tiles
+    seg(0, 0, 0, 0, 0), seg(1, 0, 0, 0, 0), seg(2, 0, 0, 0, 0), seg(3, 0, 0, 0, 0),
+    seg(4, 0, 0, 16, 0, 2, 2), seg(5, 0, 0, 64, 0, 4, 4),
+    seg(6, 0, 0, 8, 0, 0, 2), seg(7, 0, 0, 32, 0, 2, 4),
+    seg(8, 0, 0, 32, 0, 4, 2), seg(9, 0, 0, 8, 0, 2, 0),
+    seg(10, 0, 0, 0, 0, 6, 6), seg(11, 0, 0, 0, 0, 8, 8),
+    seg(12, 0, 0, 0, 0, 0, 6), seg(13, 0, 0, 0, 0, 6, 8),
+    seg(14, 0, 0, 0, 0, 8, 6), seg(15, 0, 0, 0, 0, 6, 0),
+    seg(16, -64, -64, 0, 3), seg(17, -64, 64, 0, 1),
+    seg(18, 0, 0, 0, 0, 0, 0, 0, 2), seg(19, 0, 0, 0, 0, 0, 0, 0, 4),
+    seg(20, 0, 0, 0, 0, 0, 0, 2, 0), seg(21, 0, 0, 0, 0, 0, 0, 4, 0),
+    seg(22, -64, -64, 0, 3, 0, 0, 2, 2), seg(23, -64, 64, 0, 1, 0, 0, 4, 4),
+    seg(32, 0, 0, 0, 0, 0, 0, 2, 2), seg(33, 0, 0, 0, 0, 0, 0, 4, 4),
+    seg(42, -32, -32, 0, 3), seg(43, -32, 32, 0, 1),
+    seg(44, -32, -32, 0, 3, 0, 0, 2, 2), seg(45, -32, 32, 0, 1, 0, 0, 4, 4),
+    seg(99, 0, 0, 0, 0),
 ];
 
 global.registerPlugin = (p) => {
@@ -302,6 +309,33 @@ let r2 = request("getValidNextPieces", { rideId: ride1 });
 assert(r2.success === true && r2.payload.stateCategory === "flat", "last piece (Flat) maps to 'flat' category");
 assert(JSON.stringify(r2.payload.validPieces) === JSON.stringify([0, 6, 12, 16, 17, 42, 43, 18, 19, 99]),
     "flat category exposes the expected valid pieces");
+
+// Descriptor end slope and bank determine supported cardinal connection candidates.
+for (const [type, expected] of [
+    [6, [4, 9, 7]], [7, [5, 8]], [12, [10, 15, 13]],
+    [18, [32, 20, 22, 44]], [19, [33, 21, 23, 45]],
+]) {
+    clearTiles();
+    const piece = makeTrack(20, 20, type, 0, 112);
+    place(8, piece);
+    const candidates = request("getValidNextPieces", { rideId: 8 }).payload.validPieces;
+    assert(JSON.stringify(candidates) === JSON.stringify(expected),
+        "descriptor-matched candidates after piece " + type + " (got " + JSON.stringify(candidates) + ")");
+}
+clearTiles();
+const inverted = makeTrack(20, 20, 0, 0, 112);
+inverted.isInverted = true;
+place(8, inverted);
+assert(request("getValidNextPieces", { rideId: 8 }).payload.validPieces.length === 0,
+    "inverted track does not receive unvalidated cardinal candidates");
+clearTiles();
+place(8, makeTrack(20, 20, 0, 4, 112));
+assert(request("getValidNextPieces", { rideId: 8 }).payload.validPieces.length === 0,
+    "diagonal endpoints do not receive unvalidated cardinal candidates");
+clearTiles();
+place(8, makeTrack(20, 20, 999, 0, 112));
+assert(request("getValidNextPieces", { rideId: 8 }).payload.validPieces.length === 0,
+    "missing descriptors do not fall back to flat candidates");
 
 // 3. A station-only track keeps offering station pieces alongside normal track.
 clearTiles();

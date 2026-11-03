@@ -1,4 +1,4 @@
-var PLUGIN_VERSION = "0.7.0";
+var PLUGIN_VERSION = "0.8.0";
 
 function main() {
     "use strict";
@@ -63,54 +63,14 @@ function main() {
     server.listen(port);
     console.log("Ride API server listening on port " + port + ".");
 
-    // Track validation rules based on ending pitch and roll states
-    // Based on actual TrackElemType enum from OpenRCT2 source and neural_rct constraints
-    var trackConnectionRules = {
-        // The game auto-assigns begin/middle/end to station pieces based on the
-        // station's shape (a lone piece becomes an EndStation), so while the
-        // last piece is a station piece the agent is "at the station": it may
-        // keep extending the station or start laying normal track.
-        "station": {
-            allowed: [1, 3, 0, 6, 12, 16, 17, 18, 19, 42, 43, 99] // station pieces + track starters
-        },
-        // Flat straight pieces (type 0)
-        "flat": {
-            allowed: [0, 6, 12, 16, 17, 42, 43, 18, 19, 99] // flat, transitions, turns, banking transitions, brakes
-        },
-        // Gentle up slope (type 4 = Up25)
-        "up25": {
-            allowed: [4, 9, 7] // continue up25, up25-to-flat, up25-to-60
-        },
-        // Steep up slope (type 5 = Up60)
-        "up60": {
-            allowed: [5, 8] // continue up60 or transition down to up25
-        },
-        // Gentle down slope (type 10 = Down25)
-        "down25": {
-            allowed: [10, 15, 13] // continue down25, down25-to-flat, down25-to-60
-        },
-        // Steep down slope (type 11 = Down60)
-        "down60": {
-            allowed: [11, 14] // continue down60 or transition to down25
-        },
-        // Turns (16, 17, 42, 43)
-        "turn": {
-            allowed: [0, 16, 17, 42, 43, 6, 12, 18, 19, 99] // flat, turns, gentle transitions, banking starts, brakes
-        },
-        // Banking pieces
-        "left_bank": {
-            allowed: [32, 20, 22, 44] // continue left bank, left-bank-to-flat, banked turns
-        },
-        "right_bank": {
-            allowed: [33, 21, 23, 45] // continue right bank, right-bank-to-flat, banked turns
-        },
-        "flat_to_left_bank": {
-            allowed: [32, 20, 22, 44] // left bank, left-bank-to-flat, banked left turns
-        },
-        "flat_to_right_bank": {
-            allowed: [33, 21, 23, 45] // right bank, right-bank-to-flat, banked right turns
-        }
-    };
+    // Only pieces with an existing server-side name and cardinal geometry.
+    // Slope/bank compatibility comes from the game's descriptors below; ride
+    // support and placement clearance are separate questions.
+    var supportedCardinalPieces = [
+        0, 6, 12, 16, 17, 42, 43, 18, 19, 99,
+        4, 9, 7, 5, 8, 10, 15, 13, 11, 14,
+        32, 20, 22, 44, 33, 21, 23, 45, 1, 3
+    ];
 
     /**
      * Get the track state category for validation rules
@@ -191,8 +151,7 @@ function main() {
                 return "right_bank"; // Banked right turns maintain right bank
 
             default:
-                console.log("Unknown track type:", trackType, "- defaulting to flat");
-                return "flat"; // Default to flat for unknown pieces
+                return "unknown";
         }
     }
 
@@ -327,7 +286,12 @@ function main() {
                     endX: s.endX || 0,
                     endY: s.endY || 0,
                     endZ: s.endZ || 0,
-                    endDirection: (s.endDirection || 0) & 3,
+                    beginDirection: s.beginDirection,
+                    endDirection: s.endDirection,
+                    beginSlope: s.beginSlope,
+                    endSlope: s.endSlope,
+                    beginBank: s.beginBank,
+                    endBank: s.endBank,
                     clearX: clearX,
                     clearY: clearY,
                     clearZ: clearZ
@@ -1010,17 +974,32 @@ function main() {
                 // Get the last placed track piece from history
                 var lastPiece = state.history[state.history.length - 1];
 
-                // Get the state category for the last placed track
+                // Descriptor shape is only a connection candidate, not proof of
+                // ride support or clearance. Inverted and diagonal track need
+                // additional geometry and bank handling, so fail closed for now.
                 var stateCategory = getTrackStateCategory(lastPiece.trackType, false);
-                var rules = trackConnectionRules[stateCategory];
-
-                var validPieces;
-                if (!rules) {
-                    // No specific rules - allow safe flat pieces only
-                    console.log("Warning: No rules for state category:", stateCategory, "track type:", lastPiece.trackType);
-                    validPieces = [0, 16, 17, 42, 43];
-                } else {
-                    validPieces = rules.allowed;
+                var geometry = getSegmentGeometry();
+                var previous = geometry[lastPiece.trackType];
+                var hasInverted = state.elements.some(function (entry) {
+                    return entry.element.isInverted === true;
+                });
+                var isStation = lastPiece.trackType === 1 || lastPiece.trackType === 2 || lastPiece.trackType === 3;
+                var validPieces = [];
+                if (!hasInverted && previous &&
+                    (supportedCardinalPieces.indexOf(lastPiece.trackType) !== -1 || lastPiece.trackType === 2) &&
+                    typeof previous.endDirection === "number" && previous.endDirection >= 0 && previous.endDirection < 4 &&
+                    typeof lastPiece.nextDirection === "number" && lastPiece.nextDirection >= 0 && lastPiece.nextDirection < 4 &&
+                    typeof previous.endSlope === "number" && typeof previous.endBank === "number") {
+                    supportedCardinalPieces.forEach(function (type) {
+                        var candidate = geometry[type];
+                        if (!candidate || ((type === 1 || type === 3) && !isStation)) return;
+                        if (candidate.beginDirection !== 0 || typeof candidate.endDirection !== "number" ||
+                            candidate.endDirection < 0 || candidate.endDirection >= 4) return;
+                        if (typeof candidate.beginSlope !== "number" || typeof candidate.beginBank !== "number") return;
+                        if (candidate.beginSlope === previous.endSlope && candidate.beginBank === previous.endBank) {
+                            validPieces.push(type);
+                        }
+                    });
                 }
 
                 var buildPosition = {
