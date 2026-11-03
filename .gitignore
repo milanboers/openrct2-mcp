@@ -217,5 +217,5 @@ __marimo__/
 
 .DS_Store
 
-# Local agent-run reports, model settings, costs and traces
-/benchmarks/runs/
+# Local game logs, smoke-test output and scratch reports
+/local-runs/

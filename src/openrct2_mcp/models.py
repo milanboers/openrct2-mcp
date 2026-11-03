@@ -1,4 +1,4 @@
-"""Public construction inputs shared by MCP and benchmark reference validation."""
+"""Public construction inputs shared by MCP tools and live smoke tests."""
 
 from typing import Literal
 

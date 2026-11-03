@@ -141,7 +141,7 @@ This checks server registration and park readiness, not another agent session's 
 - Path construction is limited to flat, dry ground with no replacement or scenery clearing. Nearby paths, open status and moving trains do not establish guest access. Customer-completion interpretation is validated only for wooden coasters on the tested game version.
 - Saving does not load a park or reset it. Preserve existing work and avoid concurrent edits to the same ride.
 
-## Development and evaluation
+## Development checks
 
 ```sh
 uv sync --locked --extra dev
@@ -152,8 +152,7 @@ uv run --locked python scripts/check_install.py
 Node.js is required for the JavaScript contract tests. Stubbed tests do not replace live-game verification.
 
 - [Detailed setup, tool contracts, troubleshooting and live checks](docs/reference.md)
-- [Agent briefs, reference calibrations and trial protocol](benchmarks/README.md)
-- [Guest-operation calibration](docs/reference.md#guest-operation-calibration): opt-in scripted validation of queue/exit routes, customer completion and a checkpoint in a fresh sandbox, not agent-performance evidence.
+- [Guest-operation smoke test](docs/reference.md#guest-operation-smoke-test): opt-in live checks for queue/exit routes, customer completion and a checkpoint in a fresh sandbox.
 
 ## Attribution
 

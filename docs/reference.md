@@ -181,7 +181,7 @@ A cheap read-only check of a fresh MCP connection is available:
 uv run --locked python scripts/check_ready.py --expected-park sandbox --require-unpaused
 ```
 
-Add `--require-empty` before a fresh benchmark, or `--port` for another local plugin instance. Exit `0` means ready, `1` means unmet readiness checks, and `2` means collection/input failure. This checks server registration, compatibility and park state, **not another AI session's tool allowlist**. No agent/model calls or park changes are made.
+Add `--require-empty` before a fresh smoke test, or `--port` for another local plugin instance. Exit `0` means ready, `1` means unmet readiness checks, and `2` means collection/input failure. This checks server registration, compatibility and park state, **not another AI session's tool allowlist**. No agent/model calls or park changes are made.
 
 Updated Python clients check the matching plugin release and protocol before the first mutation on each connection, and recheck after disconnection. A failed handshake rejects the requested mutation before sending it. Reads remain available for diagnostics. This does not retrofit safety checks into old clients or secure raw local TCP callers.
 
@@ -284,17 +284,19 @@ The game connects edges and assigns queue ownership. Placement returns neighbori
 
 `save_park(label)` requests a checkpoint named `mcp-<label>-<fresh UUID>.park` in the game's save directory. Labels accept 1–48 ASCII letters, digits, underscores or hyphens, not paths or existing save filenames. UUID names and a session reuse guard avoid intentionally overwriting prior saves; the plugin cannot perform a filesystem-wide existence check. The save API returns void, so `file_written` remains `unknown` even after acknowledgement. Verify the file before relying on it. An unknown request retains its generated filename for inspection and is never automatically retried. Saving does not load a park or reset the game.
 
-### Guest-operation calibration
+### Guest-operation smoke test
 
 In a fresh, unpaused bundled sandbox with the matching plugin:
 
 ```sh
-uv run --locked python scripts/guest_smoke_test.py --output-dir /tmp/guest-calibration-1
+uv run --locked python scripts/guest_smoke_test.py --output-dir /tmp/guest-smoke-1
 ```
 
-The script asks for consent (`--yes` explicitly skips the prompt), refuses existing rides and reused output directories, builds a rated reference, connects explicit flat queue/exit routes to the sandbox's existing public-path anchor, checks reciprocal edges and queue assignment, opens the ride and observes customer completion. It requests a checkpoint and retains evidence and partial work on failure. It never resets the park, deletes existing rides, changes cash/research, or chooses an agent's design. `--port` selects another plugin instance and `--timeout` bounds construction testing and guest observation separately.
+The script asks for consent (`--yes` explicitly skips the prompt), refuses existing rides and reused output directories, builds the fixed coaster in `scenarios/guest-coaster.json`, connects explicit flat queue/exit routes to the sandbox's existing public-path anchor, checks reciprocal edges and queue assignment, opens the ride and observes customer completion. It requests a checkpoint and retains logs and partial work on failure. It never resets the park, deletes existing rides, or changes cash/research. `--port` selects another plugin instance and `--timeout` bounds construction testing and guest observation separately.
 
-This is scripted calibration, not agent performance or scenario completion. It checks specific routes to a known anchor, not arbitrary park-wide pathfinding. A separate headless test instance with its own user-data directory and plugin port can preserve an existing interactive park. OpenRCT2's `--port` is its multiplayer port; change the local test plugin's listener port separately, then pass that port to the MCP scripts.
+This checks a known end-to-end workflow, not an automatic designer or general pathfinder. The fixture's geometry and station positions match this sandbox and its path routes; changing them requires updating and live-checking the routes too. Checkpoint acknowledgement alone does not verify the saved file.
+
+A separate headless test instance with its own user-data directory and plugin port can preserve an existing interactive park. OpenRCT2's `--port` is its multiplayer port; change the local test plugin's listener port separately, then pass that port to the MCP scripts.
 
 ## Outcomes and response size
 
@@ -308,27 +310,15 @@ State-returning mutations (`create_ride`, placement/sequence, removal, entrance/
 
 ## Optional local metrics
 
-Start a dedicated server process for each trial with:
+For diagnostics, start the server with a new local metrics file:
 
 ```sh
-uv run --locked openrct2-mcp --metrics-file /tmp/coaster-trial-1.jsonl
+uv run --locked openrct2-mcp --metrics-file /tmp/coaster-tools.jsonl
 ```
 
-Alternatively set `OPENRCT2_METRICS_FILE` in that server's environment. Files are created exclusively and never overwritten. Metrics record tool names, completion times, durations, outcomes, placement/query/removal counts and response sizes. They do **not** record arguments, conversations, error text, result bodies or image data, and are not uploaded. Recording failures disable metrics rather than masking an action result. A healthy server writes a completion marker when it exits normally. Close the client/server cleanly before evaluating metrics. Unfinished captures (including legacy files without a marker) are rejected by default; `evaluate_ride.py --allow-incomplete-metrics` explicitly accepts their recorded prefix and labels it `capture_complete: false`.
+Alternatively set `OPENRCT2_METRICS_FILE`. Files are created exclusively and never overwritten. Metrics record tool names, completion times, durations, outcomes, placement/query/removal counts and response sizes. They do **not** record arguments, conversations, error text, result bodies or image data, and are not uploaded. Recording failures disable metrics rather than masking an action result.
 
-Counts cover that server process, not proven agent/ride ownership. Requested placements are distinct from confirmed placements; rejected placement requests include preflight rejection. Summed call duration is not elapsed trial time or token usage. The optional `--port` selects another local plugin port; the plugin itself still binds only to loopback.
-
-## Agent benchmarks
-
-`benchmarks/` contains prompts and versioned acceptance criteria for a working coaster, a compact footprint, and an excitement/intensity target. Run an agent against a brief in a fresh sandbox, then collect a read-only evaluation:
-
-```sh
-uv run --locked python scripts/evaluate_ride.py \
-  --brief benchmarks/working-coaster.json --ride-id 0 \
-  --agent-label "model-settings-run-1" --output /tmp/coaster-result.json
-```
-
-The evaluator observes movement, records ratings and actual track-element bounds, and preserves the brief and evidence in a JSON report. It does not build, start, close, unpause or delete anything, and refuses mixed evidence if the layout changes. Exit `0` means pass, `1` means failed acceptance checks, and `2` means invalid input or a collection error. Reports are never overwritten. See [benchmarks/README.md](../benchmarks/README.md) for the trial protocol and limitations. These are seed tasks, not model rankings. The bundled version-2 briefs require observed station entrance/exit presence; legacy version-1 briefs remain readable with their original criteria. Optional `--metrics-file /tmp/coaster-trial-1.jsonl` attaches process-level counts to the report. Known-passing construction inputs, an opt-in reference builder, and continuation/obstruction/rating-revision trial setups are documented in [benchmarks/README.md](../benchmarks/README.md).
+A healthy server writes a completion marker on normal exit; interrupted captures can be incomplete. Counts cover that server process, not a specific ride. Requested placements are distinct from confirmed placements. Summed call duration is not elapsed session time or token usage. The optional `--port` selects another local plugin port; the plugin still binds only to loopback.
 
 ## Compatibility and security
 
@@ -349,7 +339,7 @@ uv run --locked pytest src/tests
 
 CI installs Node explicitly so JavaScript contract tests run. The tests cover the TCP/plugin contract against a stubbed game and an actual MCP client. They do not replace live-game verification.
 
-The Python code uses a conventional `src/openrct2_mcp/` package. The console command remains `openrct2-mcp`. Runtime dependency bounds start at the versions used for verification and exclude untested future major versions; `uv.lock` pins the reproducible checkout environment. Pydantic is declared directly because the server and benchmark schema use it.
+The Python code uses a conventional `src/openrct2_mcp/` package. The console command remains `openrct2-mcp`. Runtime dependency bounds start at the versions used for verification and exclude untested future major versions; `uv.lock` pins the reproducible checkout environment. Pydantic is declared directly because the server and smoke-test fixture validation use it.
 
 To verify distribution/install behaviour without a running game:
 
@@ -357,7 +347,7 @@ To verify distribution/install behaviour without a running game:
 uv run --locked python scripts/check_install.py
 ```
 
-This builds a source archive, builds a wheel from that archive, installs locked runtime dependencies and the wheel into a temporary isolated environment, and starts its actual console entry point through MCP from outside the checkout. With Node.js installed, it verifies registration, then runs a small construction/editing contract through the installed server and the source archive's plugin against a local stub. A unique stub identity is checked before any mutation, so it does not build in a running park. The check covers partial failures, stale guards, UTF-8, PNG responses and finalized metrics. This is protocol verification, not validation of OpenRCT2 physics or clearance. The wheel excludes tests; the source archive includes the plugin, skill, scenario, scripts and benchmarks. CI runs this check in its Python 3.10/3.12 matrix. The script cleans up its temporary build/install files.
+This builds a source archive, builds a wheel from that archive, installs locked runtime dependencies and the wheel into a temporary isolated environment, and starts its actual console entry point through MCP from outside the checkout. With Node.js installed, it verifies registration, then runs a small construction/editing contract through the installed server and the source archive's plugin against a local stub. A unique stub identity is checked before any mutation, so it does not build in a running park. The check covers partial failures, stale guards, UTF-8, PNG responses and finalized metrics. This is protocol verification, not validation of OpenRCT2 physics or clearance. The wheel excludes tests; the source archive includes the plugin, skill, scenarios, scripts and detailed documentation. CI runs this check in its Python 3.10/3.12 matrix. The script cleans up its temporary build/install files.
 
 For the full MCP-to-game flow, load the bundled empty sandbox, unpause, and run:
 
@@ -367,7 +357,7 @@ uv run --locked python scripts/smoke_test.py --check-endpoints --check-collision
 
 The script asks for confirmation and refuses parks with existing rides. It checks plugin compatibility and the loaded, unpaused sandbox identity, verifies representative placements and removals in four temporary rotation-test rides (then deletes those rides), and checks same-ride collision rejection in another temporary ride, then builds a 42-piece circuit and checks both spatial views. It waits for moving trains and ratings, closes and explicitly resets the ride, removes/replaces its terminal flat piece, restores entrances/exits, and retests. `--timeout` changes the 120-second wait for each test phase. Omit `--check-endpoints` or `--check-collisions` to skip those optional checks. The collision regression expects the clearance status observed in OpenRCT2 0.5.7 and verifies both the query and rejected placement leave the track unchanged.
 
-`--check-revision-api` creates and deletes only its own probe ride to verify loaded object selection, compact responses, alternative queries, stale append/removal guards, and chain/brake readback. It also reads a test report for the final coaster. `--metrics-file /tmp/smoke-run.jsonl` records that smoke server process (not an agent benchmark).
+`--check-revision-api` creates and deletes only its own probe ride to verify loaded object selection, compact responses, alternative queries, stale append/removal guards, and chain/brake readback. It also reads a test report for the final coaster. `--metrics-file /tmp/smoke-run.jsonl` records that smoke server process.
 
 The final coaster remains in the park. On failure, rides may remain for inspection. The script does not restart the game or delete pre-existing rides. Flatpak installations may require opening the scenario from within the OpenRCT2 user directory rather than directly from the repository.
 
