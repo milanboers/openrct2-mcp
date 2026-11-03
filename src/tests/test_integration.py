@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-import mcp_server
+from openrct2_mcp import mcp_server
 
 TESTS_DIR = Path(__file__).resolve().parent
 _has_node = shutil.which("node") is not None

@@ -195,6 +195,18 @@ Mutation responses include `operation_outcome`: `confirmed`, `rejected`, or `unk
 
 Default state responses retain the full history and image. Images are capped at 1600 pixels per side, and text occupancy grids over 4096 tiles are omitted. Use `get_coaster_state(ride_id, include_image=false, compact=true)` for smaller responses. Batches accept up to 256 segments.
 
+## Agent benchmarks
+
+`benchmarks/` contains prompts and versioned acceptance criteria for a working coaster, a compact footprint, and an excitement/intensity target. Run an agent against a brief in a fresh sandbox, then collect a read-only evaluation:
+
+```sh
+uv run --locked python scripts/evaluate_ride.py \
+  --brief benchmarks/working-coaster.json --ride-id 0 \
+  --agent-label "model-settings-run-1" --output /tmp/coaster-result.json
+```
+
+The evaluator observes movement, records ratings and actual track-element bounds, and preserves the brief and evidence in a JSON report. It does not build, start, close, unpause or delete anything, and refuses mixed evidence if the layout changes. Exit `0` means pass, `1` means failed acceptance checks, and `2` means invalid input or a collection error. Reports are never overwritten. See [benchmarks/README.md](benchmarks/README.md) for the trial protocol and limitations. These are seed tasks, not model rankings; tool-call efficiency is not measured yet.
+
 ## Compatibility and security
 
 - Live-verified against OpenRCT2 **0.5.7**, scripting API **124**, with plugin **0.10.0**. Other versions are not yet verified.
@@ -213,6 +225,16 @@ uv run --locked pytest src/tests
 ```
 
 CI installs Node explicitly so JavaScript contract tests run. The tests cover the TCP/plugin contract against a stubbed game and an actual MCP client. They do not replace live-game verification.
+
+The Python code uses a conventional `src/openrct2_mcp/` package. The console command remains `openrct2-mcp`. Runtime dependency bounds start at the versions used for verification and exclude untested future major versions; `uv.lock` pins the reproducible checkout environment. Pydantic is declared directly because the server and benchmark schema use it.
+
+To verify distribution/install behaviour without a running game:
+
+```sh
+uv run --locked python scripts/check_install.py
+```
+
+This builds a source archive, builds a wheel from that archive, installs locked runtime dependencies and the wheel into a temporary isolated environment, and starts its actual console entry point through MCP from outside the checkout. It verifies tool registration without calling the game. The wheel excludes tests; the source archive includes the plugin, skill, scenario, scripts and benchmarks. CI runs this check in its Python 3.10/3.12 matrix. The script cleans up its temporary build/install files.
 
 For the full MCP-to-game flow, load the bundled empty sandbox, unpause, and run:
 

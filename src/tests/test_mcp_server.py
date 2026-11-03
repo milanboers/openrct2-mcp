@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 from typing import Any
 
-from mcp_server import (
+from openrct2_mcp.mcp_server import (
     create_ride,
     generate_coaster_image,
     generate_height_map,
@@ -51,7 +51,7 @@ def test_explicit_incomplete_circuit_is_not_overridden_by_geometric_fallback() -
     piece = {'x': 10, 'y': 10, 'z': 14, 'direction': 0, 'trackType': 0}
     endpoint = {'x': 10, 'y': 10, 'z': 14, 'direction': 0}
 
-    with patch('mcp_server._get_ride_type', return_value=52):
+    with patch('openrct2_mcp.mcp_server._get_ride_type', return_value=52):
         state, _ = format_coaster_state(1, {
             'history': [piece], 'nextEndpoint': endpoint, 'isCircuitComplete': False,
         }, [])
@@ -119,7 +119,7 @@ class TestCreateRide:
 
 
     def test_create_ride_station_failure_returns_ride_id(self) -> None:
-        from api_client import APIError
+        from openrct2_mcp.api_client import APIError
 
         with patch.object(api_client, 'create_ride', return_value={'rideId': 7}), \
              patch.object(api_client, 'place_track_piece', side_effect=APIError('Location occupied')):
@@ -181,20 +181,20 @@ class TestPlaceTrackSegment:
         with patch.object(api_client, 'get_valid_next_pieces', return_value={
             'validPieces': [0], 'position': {'x': 10, 'y': 20, 'z': 14, 'direction': 0},
         }), patch.object(api_client, 'place_track_piece', return_value={'endpointPredictionMismatch': mismatch}), \
-             patch('mcp_server._get_ride_type', return_value=52), \
-             patch('mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']):
+             patch('openrct2_mcp.mcp_server._get_ride_type', return_value=52), \
+             patch('openrct2_mcp.mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']):
             result = place_track_segment(1, 'Flat')
 
         assert result[0]['endpoint_prediction_mismatches'] == [{'segment_index': 0, **mismatch}]
 
     @pytest.mark.parametrize('failure', ['complete', 'invalid', 'placement'])
     def test_place_track_segment_failure(self, failure: str) -> None:
-        from api_client import APIError
+        from openrct2_mcp.api_client import APIError
 
         with patch.object(api_client, 'get_valid_next_pieces') as valid, \
              patch.object(api_client, 'place_track_piece') as place, \
-             patch('mcp_server._get_ride_type', return_value=52), \
-             patch('mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']):
+             patch('openrct2_mcp.mcp_server._get_ride_type', return_value=52), \
+             patch('openrct2_mcp.mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']):
             valid.return_value = {
                 'validPieces': [] if failure == 'invalid' else [0],
                 'isCircuitComplete': failure == 'complete',
@@ -219,8 +219,8 @@ class TestPlaceTrackSequence:
     def test_sequence_success(self) -> None:
         with patch.object(api_client, 'get_valid_next_pieces') as valid, \
              patch.object(api_client, 'place_track_piece') as place, \
-             patch('mcp_server._get_ride_type', return_value=52), \
-             patch('mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']) as final:
+             patch('openrct2_mcp.mcp_server._get_ride_type', return_value=52), \
+             patch('openrct2_mcp.mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']) as final:
             valid.side_effect = [
                 {'validPieces': [6], 'position': {'x': 10, 'y': 20, 'z': 14, 'direction': 0}},
                 {'validPieces': [4], 'position': {'x': 9, 'y': 20, 'z': 15, 'direction': 0}},
@@ -237,15 +237,15 @@ class TestPlaceTrackSequence:
             final.assert_called_once_with(1)
 
     def test_sequence_reports_mismatch_even_when_later_piece_fails(self) -> None:
-        from api_client import APIError
+        from openrct2_mcp.api_client import APIError
 
         mismatch = {'predicted': {'x': 9}, 'actual': {'x': 11}}
         valid = {'validPieces': [0], 'position': {'x': 10, 'y': 20, 'z': 14, 'direction': 0}}
         with patch.object(api_client, 'get_valid_next_pieces', return_value=valid), \
              patch.object(api_client, 'place_track_piece', side_effect=[
                  {'endpointPredictionMismatch': mismatch}, APIError('Location occupied'),
-             ]), patch('mcp_server._get_ride_type', return_value=52), \
-             patch('mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']):
+             ]), patch('openrct2_mcp.mcp_server._get_ride_type', return_value=52), \
+             patch('openrct2_mcp.mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']):
             result = place_track_sequence(1, [TrackSegment(track_type='Flat')] * 2)
 
         assert result[0]['success'] is False
@@ -255,12 +255,12 @@ class TestPlaceTrackSequence:
 
     @pytest.mark.parametrize('failure', ['invalid', 'placement', 'complete'])
     def test_sequence_stops_on_failure(self, failure: str) -> None:
-        from api_client import APIError
+        from openrct2_mcp.api_client import APIError
 
         with patch.object(api_client, 'get_valid_next_pieces') as valid, \
              patch.object(api_client, 'place_track_piece') as place, \
-             patch('mcp_server._get_ride_type', return_value=52), \
-             patch('mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']) as final:
+             patch('openrct2_mcp.mcp_server._get_ride_type', return_value=52), \
+             patch('openrct2_mcp.mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']) as final:
             first = {'validPieces': [0], 'position': {'x': 10, 'y': 20, 'z': 14, 'direction': 0}}
             second = {'validPieces': [0] if failure == 'placement' else [],
                       'position': {'x': 9, 'y': 20, 'z': 14, 'direction': 0},
@@ -351,7 +351,7 @@ class TestCoasterTools:
         with patch.object(api_client, 'get_valid_next_pieces', return_value={
             'validPieces': [6], 'position': {'x': 10, 'y': 20, 'z': 14, 'direction': 0},
         }), patch.object(api_client, 'place_track_piece', return_value={'placeable': False, 'error_message': 'Blocked'}) as place, \
-             patch('mcp_server._get_ride_type', return_value=52):
+             patch('openrct2_mcp.mcp_server._get_ride_type', return_value=52):
             result = check_track_segment(1, 'FlatToUp25', has_chain_lift=True)
 
             assert result == {'placeable': False, 'error_message': 'Blocked'}
@@ -392,7 +392,7 @@ class TestCoasterTools:
                                          'protocol_version': 1, 'expected_protocol_version': 1, 'protocol_compatible': True}
 
     def test_list_rides_failure_is_not_empty_list(self) -> None:
-        from api_client import APIError
+        from openrct2_mcp.api_client import APIError
 
         with patch.object(api_client, 'list_all_rides', side_effect=APIError('Disconnected')):
             assert list_all_rides() == {'success': False, 'error': 'Disconnected'}
@@ -446,7 +446,7 @@ class TestCoasterTools:
 def test_missing_ride_type_prevents_placement():
     with patch.object(api_client, 'list_all_rides', return_value=[]), \
          patch.object(api_client, 'place_track_piece') as place, \
-         patch('mcp_server.get_coaster_state', return_value={'success': False, 'error': 'Ride not found'}):
+         patch('openrct2_mcp.mcp_server.get_coaster_state', return_value={'success': False, 'error': 'Ride not found'}):
         result = place_track_segment(7, 'Flat')
 
     assert result['success'] is False
@@ -456,10 +456,10 @@ def test_missing_ride_type_prevents_placement():
 
 
 def test_undo_failure_is_not_reported_as_success():
-    from api_client import APIError
+    from openrct2_mcp.api_client import APIError
 
     with patch.object(api_client, 'delete_last_track_piece', side_effect=APIError('Ride must be closed')), \
-         patch('mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']):
+         patch('openrct2_mcp.mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']):
         result = undo_last_piece(7)
 
     assert result[0]['success'] is False
@@ -468,9 +468,9 @@ def test_undo_failure_is_not_reported_as_success():
 
 
 def test_confirmed_placement_with_failed_state_read_retains_outcome():
-    with patch('mcp_server._place_track_segment', return_value={}), \
-         patch('mcp_server._get_ride_type', return_value=52), \
-         patch('mcp_server.get_coaster_state', return_value={'success': False, 'error': 'Disconnected'}):
+    with patch('openrct2_mcp.mcp_server._place_track_segment', return_value={}), \
+         patch('openrct2_mcp.mcp_server._get_ride_type', return_value=52), \
+         patch('openrct2_mcp.mcp_server.get_coaster_state', return_value={'success': False, 'error': 'Disconnected'}):
         result = place_track_segment(7, 'Flat')
 
     assert result['success'] is False
@@ -481,7 +481,7 @@ def test_confirmed_placement_with_failed_state_read_retains_outcome():
 def test_compact_snapshot_uses_one_request_and_skips_rendering():
     with patch.object(api_client, 'get_coaster_state', return_value={
         'history': [], 'rideType': 51, 'validPieces': [], 'layoutStatus': 'empty',
-    }) as snapshot, patch('mcp_server.generate_coaster_image') as render:
+    }) as snapshot, patch('openrct2_mcp.mcp_server.generate_coaster_image') as render:
         result = get_coaster_state(7, include_image=False, compact=True)
 
     assert result['success'] is True
@@ -510,11 +510,11 @@ def test_large_visualizations_are_bounded():
 
 @pytest.mark.parametrize(('outcome', 'placed_count'), [('rejected', 0), ('unknown', 0), ('confirmed', 1)])
 def test_sequence_distinguishes_rejection_transport_failure_and_post_placement_failure(outcome, placed_count):
-    from api_client import APIError
+    from openrct2_mcp.api_client import APIError
 
-    with patch('mcp_server._get_ride_type', return_value=52), \
-         patch('mcp_server._place_track_segment', side_effect=APIError('Placement diagnostics failed', outcome=outcome)), \
-         patch('mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']):
+    with patch('openrct2_mcp.mcp_server._get_ride_type', return_value=52), \
+         patch('openrct2_mcp.mcp_server._place_track_segment', side_effect=APIError('Placement diagnostics failed', outcome=outcome)), \
+         patch('openrct2_mcp.mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']):
         result = place_track_sequence(7, [TrackSegment(track_type='Flat')])
 
     assert result[0]['success'] is False
@@ -526,7 +526,7 @@ def test_sequence_distinguishes_rejection_transport_failure_and_post_placement_f
 def test_partial_entrance_placement_is_not_reported_as_complete():
     with patch.object(api_client, 'place_entrance_exit', return_value={
         'entrance': {'x': 10}, 'exit': None, 'warning': 'Could not place exit',
-    }), patch('mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']):
+    }), patch('openrct2_mcp.mcp_server.get_coaster_state', return_value=[{'success': True}, 'image']):
         result = place_entrance_exit(7)
 
     assert result[0]['success'] is False
@@ -536,7 +536,7 @@ def test_partial_entrance_placement_is_not_reported_as_complete():
 
 
 def test_endpoint_view_returns_world_context_and_navigation_metadata():
-    from mcp_server import get_coaster_view
+    from openrct2_mcp.mcp_server import get_coaster_view
 
     snapshot = {'layoutStatus': 'complete', 'history': [
         {'x': 10, 'y': 10, 'z': 14, 'direction': 0, 'trackType': 2,
@@ -559,7 +559,7 @@ def test_endpoint_view_returns_world_context_and_navigation_metadata():
 
 
 def test_elevation_view_uses_only_ride_snapshot():
-    from mcp_server import get_coaster_view
+    from openrct2_mcp.mcp_server import get_coaster_view
 
     snapshot = {'layoutStatus': 'complete', 'history': [
         {'x': 10, 'y': 10, 'z': 14, 'direction': 0, 'trackType': 2,
@@ -581,7 +581,7 @@ def test_elevation_view_uses_only_ride_snapshot():
 
 @pytest.mark.parametrize('layout', ['empty', 'disconnected', 'ambiguous', 'truncated'])
 def test_spatial_views_reject_unreliable_traversals(layout):
-    from mcp_server import get_coaster_view
+    from openrct2_mcp.mcp_server import get_coaster_view
 
     with patch.object(api_client, 'get_coaster_state', return_value={'layoutStatus': layout, 'history': []}), \
          patch.object(api_client, 'get_map_area') as map_area:

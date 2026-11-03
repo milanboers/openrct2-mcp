@@ -5,7 +5,7 @@ from io import BytesIO
 from PIL import Image, ImageDraw
 import pytest
 
-from visualization import draw_heading, elevation_samples, render_elevation_view, render_endpoint_view
+from openrct2_mcp.visualization import draw_heading, elevation_samples, render_elevation_view, render_endpoint_view
 
 
 def test_endpoint_view_preserves_overlapping_observations_and_ignores_ghosts():

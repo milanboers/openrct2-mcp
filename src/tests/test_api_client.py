@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 from typing import Any, Generator
 
-from api_client import OpenRCT2API, APIError
+from openrct2_mcp.api_client import OpenRCT2API, APIError
 
 
 class TestOpenRCT2API:

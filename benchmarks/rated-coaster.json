@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "rated-coaster",
+  "park_name": "sandbox",
+  "prompt": "Use the build-coaster skill to design and test a Wooden Roller Coaster (ride type 52) in the bundled, empty, unpaused sandbox. Aim for excitement of at least 3.0 and intensity no greater than 8.0, on the game's decimal rating scale. Every track-element tile must remain inside x=20..125 and y=20..125, inclusive. Choose the design and revise it based on test results. Leave a complete circuit with entrance and exit, moving trains, calculated ratings, the ride testing and the game unpaused. Report the ride ID, ratings, and any unmet requirements. Do not delete unrelated work.",
+  "criteria": {
+    "ride_type": 52,
+    "footprint_bounds": {"min_x": 20, "max_x": 125, "min_y": 20, "max_y": 125},
+    "min_excitement": 3.0,
+    "max_intensity": 8.0
+  }
+}

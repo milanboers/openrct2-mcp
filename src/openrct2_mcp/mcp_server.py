@@ -8,12 +8,8 @@ from fastmcp.utilities.types import Image as MCPImage
 from PIL import Image, ImageDraw
 from pydantic import BaseModel, Field
 
-try:
-    from .api_client import OpenRCT2API, APIError
-    from .visualization import draw_heading, elevation_samples, render_elevation_view, render_endpoint_view
-except ImportError:
-    from api_client import OpenRCT2API, APIError
-    from visualization import draw_heading, elevation_samples, render_elevation_view, render_endpoint_view
+from .api_client import OpenRCT2API, APIError
+from .visualization import draw_heading, elevation_samples, render_elevation_view, render_endpoint_view
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

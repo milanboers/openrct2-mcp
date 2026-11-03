@@ -21,3 +21,4 @@ jobs:
           enable-cache: true
       - run: uv sync --locked --extra dev
       - run: uv run --locked pytest src/tests
+      - run: uv run --locked python scripts/check_install.py
