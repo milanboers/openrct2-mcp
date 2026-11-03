@@ -10,8 +10,10 @@ from pydantic import BaseModel, Field
 
 try:
     from .api_client import OpenRCT2API, APIError
+    from .visualization import draw_heading, elevation_samples, render_elevation_view, render_endpoint_view
 except ImportError:
     from api_client import OpenRCT2API, APIError
+    from visualization import draw_heading, elevation_samples, render_elevation_view, render_endpoint_view
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -228,6 +230,12 @@ def generate_coaster_image(
 
         if tile_size >= 16:
             draw.text((ix + 2, iy + 2), label, fill=(255, 255, 255))
+
+    draw_heading(draw, to_img_center(history[0]["x"], history[0]["y"]),
+                 history[0]["direction"], (90, 240, 150), min(24, tile_size * 0.6))
+    if next_endpoint and "direction" in next_endpoint:
+        draw_heading(draw, to_img_center(next_endpoint["x"], next_endpoint["y"]),
+                     next_endpoint["direction"], (255, 220, 70), min(24, tile_size * 0.6))
 
     buf_final = io.BytesIO()
     img_main.save(buf_final, format="PNG")
@@ -505,6 +513,60 @@ def get_map_area(x: int, y: int, radius: int = 4) -> dict[str, Any]:
         return api_client.get_map_area(x, y, radius)
     except APIError as e:
         return {"success": False, "error": str(e)}
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
+def get_coaster_view(
+    ride_id: int, view: Literal["endpoint", "elevation"] = "endpoint", radius: int = 4,
+) -> Any:
+    """Inspect terrain/objects around the endpoint, or a track elevation profile.
+
+    Endpoint view includes terrain base heights, slope/water indicators, paths,
+    scenery and tracks at all heights. It is not a clearance simulation. Radius
+    is 0-8 tiles. Elevation uses equally spaced track-piece boundaries, not track
+    length, and omits within-piece geometry. The first height is the track origin.
+    Green indicates the track start/return heading, yellow the current endpoint.
+    """
+    if view not in ("endpoint", "elevation") or not 0 <= radius <= 8:
+        return {"success": False, "ride_id": ride_id, "error": "Expected endpoint/elevation view and radius 0-8"}
+    try:
+        snapshot = api_client.get_coaster_state(ride_id)
+        history = snapshot.get("history", [])
+        if not history or snapshot.get("layoutStatus") != "complete":
+            raise APIError("Spatial views require a connected layout with a complete track traversal")
+        last = history[-1]
+        endpoint = {"x": last["nextX"], "y": last["nextY"], "z": last["nextZ"],
+                    "direction": last["nextDirection"]}
+        start = {key: history[0][key] for key in ("x", "y", "z", "direction")}
+        summary: dict[str, Any] = {
+            "success": True, "ride_id": ride_id, "view": view, "piece_count": len(history),
+            "current_endpoint": endpoint, "track_start": start,
+            "return_offset": {axis: start[axis] - endpoint[axis] for axis in ("x", "y", "z")},
+            "is_circuit_complete": snapshot.get("isCircuitComplete", False),
+        }
+        if view == "endpoint":
+            area = api_client.get_map_area(endpoint["x"], endpoint["y"], radius)
+            summary["map_area"] = area
+            summary["limitations"] = (
+                "All object heights are included, not just the endpoint height. Terrain labels are base Z, "
+                "not slope clearance. Ghost objects are omitted from the image but retained in map_area. "
+                "Ride and map reads are separate; the park may change between them."
+            )
+            image = render_endpoint_view(area, ride_id, endpoint, start)
+        else:
+            samples = elevation_samples(history)
+            summary["height_range"] = {"min": min(sample["z"] for sample in samples),
+                                       "max": max(sample["z"] for sample in samples)}
+            summary["sample_count"] = len(samples)
+            summary["limitations"] = (
+                "X axis is track-piece boundary index, not distance. First point is the track origin, "
+                "remaining points are next-connection heights. Lines omit within-piece geometry. "
+                "No terrain clearance, speed or G-forces are inferred."
+            )
+            image = render_elevation_view(samples)
+        return [summary, image]
+    except APIError as e:
+        return {"success": False, "ride_id": ride_id, "error": str(e)}
 
 
 @mcp.tool()

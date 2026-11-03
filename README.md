@@ -18,6 +18,7 @@ Three pieces talk to each other:
 - `place_track_segment`: Add a track segment. `valid_pieces` lists supported cardinal types whose connection shape matches; it does not guarantee ride support or clearance. Diagonal and inverted track are not supported by this filter. Placement responses include `endpoint_prediction_mismatches` if the predicted and actual endpoints differ.
 - `check_track_segment`: Ask the game whether a piece can be placed at the current endpoint without building it. The result is not a reservation or a guarantee of ride support or connectivity.
 - `get_map_area`: Inspect nearby terrain and map elements within a bounded radius.
+- `get_coaster_view`: Read-only spatial feedback. `view: "endpoint"` shows nearby terrain, water/slope indicators, paths, objects and tracks with endpoint/return headings. `view: "elevation"` plots sampled heights against track-piece boundary index, not physical distance.
 - `place_track_sequence`: Place several segments in order, returning one final state and image. Stops at the first failure; earlier segments remain placed, and the failed segment may also have been placed. Inspect the final state before retrying. Each segment accepts `track_type`, `has_chain_lift`, `brake_speed`, and `seat_rotation`.
 - `undo_last_piece`: Remove the terminal segment of a connected layout (not chronological undo). On a closed circuit with a begin station, removes the piece immediately before that station. Disconnected or ambiguous layouts are rejected.
 - `get_coaster_state`: Get track history, actual track-element tiles and base heights, and a visualization. `candidate_status` explains when candidate generation is unavailable or the circuit is complete. `layout_status` reports disconnected or ambiguous track. Set `include_image: false, compact: true` for endpoint/candidate information without full history, occupancy or an image. The footprint is not collision-clearance data; the image's connecting lines are approximate.
@@ -168,6 +169,16 @@ The skill (`skills/build-coaster/SKILL.md`) tells the agent how to build a valid
 
 The agent walks through the tools — `create_ride`, `place_track_segment`, `get_coaster_state`, `place_entrance_exit`, `start_ride_test`, `get_ride_stats` — using the images and height maps the server returns to steer the coaster home.
 
+## Spatial views
+
+`get_coaster_view(ride_id, view="endpoint", radius=4)` returns an image and the underlying bounded map observations. Radius is 0–8 tiles. Terrain numbers are base Z values, `^` marks sloped terrain, and blue terrain indicates water. Separate colored bands preserve overlapping paths, objects, other rides and the selected ride. Ghost objects remain in the data but are omitted from the image. Unfilled tiles have no observations or are outside the map.
+
+The yellow arrow marks the current endpoint heading. The green arrow marks the track start and its return heading. `S/C` means they share a tile. Structured `track_start`, `current_endpoint`, and `return_offset` remain available when the start is outside the view. The default whole-coaster image also shows these heading arrows.
+
+`get_coaster_view(ride_id, view="elevation")` plots heights at track-piece boundaries. The first sample is the track origin, and subsequent samples use the game's next-connection heights (rather than the lowered origins of downward pieces). Equal X spacing does **not** mean equal track length, and lines omit geometry within a piece. The response includes the height range and sample count.
+
+Both views require a complete traversal of a connected layout. Neither establishes clearance, ride support, speed or G-forces. The endpoint view includes objects at all heights; consult their base/clearance heights in `map_area`. Ride and map reads are separate, so the park can change between them. These views work with plugin `0.10.0`; no plugin update is needed for this feature.
+
 ## Tips
 
 - The plugin's track validation is tuned for the **Wooden Roller Coaster** (the default ride type); other ride types work but may fail on some pieces.
@@ -206,10 +217,10 @@ CI installs Node explicitly so JavaScript contract tests run. The tests cover th
 For the full MCP-to-game flow, load the bundled empty sandbox, unpause, and run:
 
 ```sh
-uv run --locked python scripts/smoke_test.py --check-endpoints
+uv run --locked python scripts/smoke_test.py --check-endpoints --check-collisions
 ```
 
-The script asks for confirmation and refuses parks with existing rides. It checks plugin compatibility, verifies representative placements and removals in four temporary rotation-test rides (then deletes those rides), then builds a 41-piece circuit. It waits for moving trains and ratings, closes the ride, removes/replaces its terminal flat piece, restores entrances/exits, and retests. `--timeout` changes the 120-second wait for each test phase. Omit `--check-endpoints` to skip the temporary rides.
+The script asks for confirmation and refuses parks with existing rides. It checks plugin compatibility, verifies representative placements and removals in four temporary rotation-test rides (then deletes those rides), and checks same-ride collision rejection in another temporary ride, then builds a 41-piece circuit and checks both spatial views. It waits for moving trains and ratings, closes the ride, removes/replaces its terminal flat piece, restores entrances/exits, and retests. `--timeout` changes the 120-second wait for each test phase. Omit `--check-endpoints` or `--check-collisions` to skip those optional checks. The collision regression expects the clearance status observed in OpenRCT2 0.5.7 and verifies both the query and rejected placement leave the track unchanged.
 
 The final coaster remains in the park. On failure, rides may remain for inspection. The script does not restart the game or delete pre-existing rides. Flatpak installations may require opening the scenario from within the OpenRCT2 user directory rather than directly from the repository.
 

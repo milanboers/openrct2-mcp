@@ -533,3 +533,60 @@ def test_partial_entrance_placement_is_not_reported_as_complete():
     assert result[0]['operation_outcome'] == 'partial'
     assert result[0]['entrance_exit']['exit'] is None
     assert result[0]['error_message'] == 'Could not place exit'
+
+
+def test_endpoint_view_returns_world_context_and_navigation_metadata():
+    from mcp_server import get_coaster_view
+
+    snapshot = {'layoutStatus': 'complete', 'history': [
+        {'x': 10, 'y': 10, 'z': 14, 'direction': 0, 'trackType': 2,
+         'nextX': 9, 'nextY': 10, 'nextZ': 14, 'nextDirection': 0},
+    ]}
+    area = {'x': 9, 'y': 10, 'radius': 0, 'tiles': []}
+    with patch.object(api_client, 'get_coaster_state', return_value=snapshot) as state, \
+         patch.object(api_client, 'get_map_area', return_value=area) as map_area:
+        summary, image = get_coaster_view(7, radius=0)
+
+    assert summary['success'] is True
+    assert summary['view'] == 'endpoint'
+    assert summary['current_endpoint'] == {'x': 9, 'y': 10, 'z': 14, 'direction': 0}
+    assert summary['track_start'] == {'x': 10, 'y': 10, 'z': 14, 'direction': 0}
+    assert summary['return_offset'] == {'x': 1, 'y': 0, 'z': 0}
+    assert summary['map_area'] == area
+    assert image.data.startswith(b'\x89PNG')
+    state.assert_called_once_with(7)
+    map_area.assert_called_once_with(9, 10, 0)
+
+
+def test_elevation_view_uses_only_ride_snapshot():
+    from mcp_server import get_coaster_view
+
+    snapshot = {'layoutStatus': 'complete', 'history': [
+        {'x': 10, 'y': 10, 'z': 14, 'direction': 0, 'trackType': 2,
+         'nextX': 9, 'nextY': 10, 'nextZ': 14, 'nextDirection': 0},
+        {'x': 9, 'y': 10, 'z': 14, 'direction': 0, 'trackType': 6,
+         'nextX': 8, 'nextY': 10, 'nextZ': 15, 'nextDirection': 0},
+    ]}
+    with patch.object(api_client, 'get_coaster_state', return_value=snapshot), \
+         patch.object(api_client, 'get_map_area') as map_area:
+        summary, image = get_coaster_view(7, view='elevation')
+
+    assert summary['success'] is True
+    assert summary['sample_count'] == 3
+    assert summary['height_range'] == {'min': 14, 'max': 15}
+    assert 'not distance' in summary['limitations']
+    assert image.data.startswith(b'\x89PNG')
+    map_area.assert_not_called()
+
+
+@pytest.mark.parametrize('layout', ['empty', 'disconnected', 'ambiguous', 'truncated'])
+def test_spatial_views_reject_unreliable_traversals(layout):
+    from mcp_server import get_coaster_view
+
+    with patch.object(api_client, 'get_coaster_state', return_value={'layoutStatus': layout, 'history': []}), \
+         patch.object(api_client, 'get_map_area') as map_area:
+        result = get_coaster_view(7)
+
+    assert result['success'] is False
+    assert 'connected layout' in result['error']
+    map_area.assert_not_called()

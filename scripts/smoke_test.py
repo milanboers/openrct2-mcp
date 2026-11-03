@@ -39,12 +39,12 @@ TRACK = (
 )
 
 
-async def call(client: Client, tool_name: str, **arguments: Any) -> Any:
+async def call(client: Client, tool_name: str, *, allow_failure: bool = False, **arguments: Any) -> Any:
     result = await client.call_tool(tool_name, arguments)
     for block in result.content:
         if block.type == "text":
             value = json.loads(block.text)
-            if isinstance(value, dict) and value.get("success") is False:
+            if isinstance(value, dict) and value.get("success") is False and not allow_failure:
                 raise RuntimeError(f"{tool_name} failed: {json.dumps(value)}")
             return value
     if tool_name == "list_all_rides" and not result.content and not result.is_error:
@@ -80,7 +80,33 @@ async def verify_endpoints(client: Client) -> None:
         print(f"Endpoint rotation {direction}: {len(names)} placements and removals checked.", flush=True)
 
 
-async def run(timeout: float, check_endpoints: bool = False) -> None:
+async def verify_collisions(client: Client) -> None:
+    """A fourth tight turn collides with this ride's own station/track."""
+    state = await call(client, "create_ride", name="Collision regression probe",
+                       station_x=100, station_y=100, station_z=30)
+    ride_id = state["ride_id"]
+    before = await call(client, "place_track_sequence", ride_id=ride_id,
+                        segments=[{"track_type": "RightQuarterTurn3Tiles"}] * 3)
+    query = await call(client, "check_track_segment", ride_id=ride_id, track_type="RightQuarterTurn3Tiles")
+    # The verified OpenRCT2 version reports collision/clearance failures as status 9.
+    if query.get("placeable") is not False or query.get("error") != 9:
+        raise RuntimeError(f"Same-ride collision query did not reject the piece on ride {ride_id}: {query}")
+    after_query = await call(client, "get_coaster_state", ride_id=ride_id, include_image=False, compact=True)
+    if (after_query.get("piece_count") != before["piece_count"] or
+            after_query.get("current_endpoint") != before["current_endpoint"]):
+        raise RuntimeError(f"Collision query mutated ride {ride_id}: {json.dumps(after_query)}")
+    rejected = await call(client, "place_track_segment", ride_id=ride_id,
+                          track_type="RightQuarterTurn3Tiles", allow_failure=True)
+    if rejected.get("success") is not False or rejected.get("operation_outcome") != "rejected":
+        raise RuntimeError(f"Same-ride collision placement did not fail safely on ride {ride_id}: {rejected}")
+    if (rejected.get("piece_count") != before["piece_count"] or
+            rejected.get("current_endpoint") != before["current_endpoint"]):
+        raise RuntimeError(f"Rejected collision placement mutated ride {ride_id}: {json.dumps(rejected)}")
+    await call(client, "delete_ride", ride_id=ride_id)
+    print("Same-ride collision query and placement rejected without changing track.", flush=True)
+
+
+async def run(timeout: float, check_endpoints: bool = False, check_collisions: bool = False) -> None:
     transport = StdioTransport(
         command="uv", args=["--directory", str(ROOT), "run", "--locked", "openrct2-mcp"]
     )
@@ -94,6 +120,8 @@ async def run(timeout: float, check_endpoints: bool = False) -> None:
             raise RuntimeError(f"Plugin/server mismatch: {json.dumps(info)}")
         if check_endpoints:
             await verify_endpoints(client)
+        if check_collisions:
+            await verify_collisions(client)
 
         state = await call(client, "create_ride", name="MCP Smoke Test")
         ride_id = state["ride_id"]
@@ -110,6 +138,11 @@ async def run(timeout: float, check_endpoints: bool = False) -> None:
             raise RuntimeError(f"Circuit is not complete: {json.dumps(state)}")
         print(f"Placed {state['placed_count']} pieces and closed the circuit.", flush=True)
 
+        for view in ("endpoint", "elevation"):
+            observed = await call(client, "get_coaster_view", ride_id=ride_id, view=view)
+            if observed.get("piece_count") != state["piece_count"]:
+                raise RuntimeError(f"Spatial view did not match the built ride: {json.dumps(observed)}")
+        print("Endpoint and elevation views returned for the completed ride.", flush=True)
         await call(client, "place_entrance_exit", ride_id=ride_id)
         await call(client, "start_ride_test", ride_id=ride_id)
         await wait_for_ratings(client, ride_id, timeout)
@@ -146,6 +179,8 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=120, help="seconds to wait for ratings (default: 120)")
     parser.add_argument('--check-endpoints', action='store_true',
                         help='also build and delete temporary rides to check all four cardinal rotations')
+    parser.add_argument('--check-collisions', action='store_true',
+                        help='also build and delete a temporary ride to verify same-ride collision rejection')
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
@@ -154,7 +189,7 @@ def main() -> int:
         if answer.strip().lower() not in ("y", "yes"):
             print("Cancelled.")
             return 1
-        asyncio.run(run(args.timeout, args.check_endpoints))
+        asyncio.run(run(args.timeout, args.check_endpoints, args.check_collisions))
     except (EOFError, KeyboardInterrupt):
         print("\nCancelled.", file=sys.stderr)
         return 1

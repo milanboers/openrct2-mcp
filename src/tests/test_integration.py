@@ -196,6 +196,7 @@ def test_mcp_serialization_and_revision_flow(plugin_server):
 
             tools = {tool.name: tool for tool in await client.list_tools()}
             assert tools['get_coaster_state'].annotations.read_only_hint is True
+            assert tools['get_coaster_view'].annotations.read_only_hint is True
             assert tools['delete_ride'].annotations.destructive_hint is True
             created = await call('create_ride', name='MCP contract')
             assert created['operation_outcome'] == 'confirmed'
@@ -204,6 +205,16 @@ def test_mcp_serialization_and_revision_flow(plugin_server):
             assert state['piece_count'] == 1
             assert state['layout_status'] == 'complete'
             assert 'pieces' not in state
+            for view in ('endpoint', 'elevation'):
+                result = await client.call_tool('get_coaster_view', {'ride_id': ride_id, 'view': view})
+                assert not result.is_error
+                assert [block.type for block in result.content] == ['text', 'image']
+                summary = json.loads(result.content[0].text)
+                assert summary['success'] is True
+                assert summary['view'] == view
+                assert summary['piece_count'] == 1
+            unchanged = await call('get_coaster_state', ride_id=ride_id, include_image=False, compact=True)
+            assert unchanged == state
             assert (await call('start_ride_test', ride_id=ride_id))['success']
             assert (await call('close_ride', ride_id=ride_id))['operation_outcome'] == 'confirmed'
             assert (await call('undo_last_piece', ride_id=ride_id))['piece_count'] == 0

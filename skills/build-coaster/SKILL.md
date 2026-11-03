@@ -65,6 +65,18 @@ The default includes full history, occupancy and a top-down image.
   Image lines are approximate. Images are bounded and large grids are omitted.
 - `get_map_area` supplies nearby terrain and object heights. Empty occupancy
   does not establish that a track segment will fit.
+- `get_coaster_view(view="endpoint", radius=4)` shows nearby terrain, slope/water
+  indicators, paths, scenery and tracks. It returns the underlying `map_area`,
+  including base/clearance heights at all levels. Ghosts are omitted from the
+  image but retained in the data. Ride and map reads are separate observations.
+- Yellow arrows mark the endpoint heading; green arrows mark the start/return
+  heading. `S/C` means a shared tile. `return_offset` points from the endpoint to
+  the start even when the start is outside the endpoint view. Both headings also
+  appear on the default whole-coaster image.
+- `get_coaster_view(view="elevation")` plots track-piece boundary index against
+  sampled height. The first point is the track origin; subsequent points are
+  next-connection heights. Equal spacing does not mean equal track length.
+  Lines omit within-piece geometry. Do not infer clearance or G-forces from it.
 
 ## Errors and editing
 
