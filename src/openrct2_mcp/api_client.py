@@ -8,6 +8,7 @@ import threading
 from typing import Any, Optional
 
 from .protocol import READ_ENDPOINTS, compatibility_error
+from ._action_client import ActionClient
 
 logger = logging.getLogger(__name__)
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
@@ -22,7 +23,7 @@ class APIError(Exception):
         self.details = details or {}
 
 
-class OpenRCT2API:
+class OpenRCT2API(ActionClient):
     """Persistent TCP client for OpenRCT2 Ride Creation API."""
 
     DEFAULT_HOST = "localhost"
@@ -96,6 +97,12 @@ class OpenRCT2API:
                     }) from error
                 self._compatible = True
             return self._exchange(endpoint, params or {}, timeout)
+
+    def _send_action(self, endpoint: str, params: dict[str, Any], *, expect_object: bool) -> Any:
+        result = self._send_request(endpoint, params)
+        if expect_object and not isinstance(result, dict):
+            raise APIError(f'Unexpected response format from {endpoint}', outcome='unknown')
+        return result
 
     def _exchange(self, endpoint: str, params: dict[str, Any], timeout: float) -> Any:
         """Exchange one frame while the caller holds the connection lock."""
@@ -191,6 +198,7 @@ class OpenRCT2API:
         query: bool = False,
         expected_endpoint: Optional[dict[str, Any]] = None,
         expected_piece_count: Optional[int] = None,
+        include_state: bool = False,
     ) -> dict[str, Any]:
         """Place or non-mutatingly query a track piece."""
         params = {
@@ -210,6 +218,8 @@ class OpenRCT2API:
         if has_chain_lift is not None:
             params["hasChainLift"] = has_chain_lift
 
+        if include_state and not query:
+            params["includeState"] = True
         endpoint = "queryTrackPiece" if query else "placeTrackPiece"
         if expected_endpoint is not None and not query:
             endpoint = "appendTrackPiece"
@@ -232,9 +242,6 @@ class OpenRCT2API:
         if not isinstance(result, dict):
             raise APIError("Unexpected response format from resetRide", outcome="unknown")
         return result
-
-    def close_ride(self, ride_id: int) -> Any:
-        return self._send_request("closeRide", {"rideId": ride_id})
 
     def get_valid_next_pieces(self, ride_id: int) -> dict[str, Any]:
         """Get valid next track pieces."""
@@ -271,12 +278,14 @@ class OpenRCT2API:
         return result
 
     def delete_last_track_piece(
-        self, ride_id: int, expected_target: Optional[dict[str, Any]] = None,
+        self, ride_id: int, expected_target: Optional[dict[str, Any]] = None, *, include_state: bool = False,
     ) -> dict[str, Any]:
         """Remove the terminal piece, optionally rechecking a preview target."""
         params: dict[str, Any] = {"rideId": ride_id}
         if expected_target is not None:
             params["expectedTarget"] = expected_target
+        if include_state:
+            params["includeState"] = True
         result = self._send_request("deleteLastTrackPiece", params)
         if not isinstance(result, dict):
             raise APIError("Unexpected response format from deleteLastTrackPiece", outcome="unknown")
@@ -289,10 +298,6 @@ class OpenRCT2API:
             raise APIError("Unexpected response format from placeEntranceExit", outcome="unknown")
         return result
 
-    def start_ride_test(self, ride_id: int) -> Any:
-        """Start the ride in test mode."""
-        return self._send_request("startRideTest", {"rideId": ride_id})
-
     def get_ride_stats(self, ride_id: int) -> dict[str, Any]:
         """Get ride statistics."""
         result = self._send_request("getRideStats", {"rideId": ride_id})
@@ -304,12 +309,6 @@ class OpenRCT2API:
         result = self._send_request("getAllTrackSegments")
         if not isinstance(result, list):
             raise APIError("Unexpected response format from getAllTrackSegments", outcome="unknown")
-        return result
-
-    def set_ride_vehicles(self, ride_id: int, setting: str, value: int) -> dict[str, Any]:
-        result = self._send_request("setRideVehicles", {"rideId": ride_id, "setting": setting, "value": value})
-        if not isinstance(result, dict):
-            raise APIError("Unexpected response format from setRideVehicles", outcome="unknown")
         return result
 
     def get_map_area(self, x: int, y: int, radius: int) -> dict[str, Any]:
@@ -336,15 +335,32 @@ class OpenRCT2API:
             raise APIError("Unexpected response format from getPluginInfo", outcome="unknown")
         return result
 
-    def delete_ride(self, ride_id: int) -> dict[str, Any]:
-        result = self._send_request("deleteRide", {"rideId": ride_id})
-        if not isinstance(result, dict):
-            raise APIError("Unexpected response format from deleteRide", outcome="unknown")
-        return result
-
     def delete_all_rides(self) -> Any:
         """Delete all rides."""
         return self._send_request("deleteAllRides")
+
+    def get_ride_build_options(self) -> dict[str, Any]:
+        return self._send_action('getRideBuildOptions', {}, expect_object=True)
+
+    def get_ride_layout(self, ride_id: int, offset: int = 0, limit: int = 256) -> dict[str, Any]:
+        return self._send_action('getRideLayout', {'rideId': ride_id, 'offset': offset, 'limit': limit}, expect_object=True)
+
+    def place_ride_footprint(self, ride_id: int, x: int, y: int, z: int, direction: int) -> dict[str, Any]:
+        return self._send_action('placeRideFootprint', {
+            'rideId': ride_id, 'x': x, 'y': y, 'z': z, 'direction': direction,
+        }, expect_object=True)
+
+    def remove_track_piece(self, ride_id: int, selection: dict[str, Any]) -> dict[str, Any]:
+        return self._send_action('removeSelectedTrackPiece', {
+            'rideId': ride_id, 'selection': selection,
+        }, expect_object=True)
+
+    def edit_maze_cell(self, ride_id: int, x_game: int, y_game: int, z: int, direction: int,
+                       mode: str, expected_maze_entry: int | None) -> dict[str, Any]:
+        return self._send_action('editMazeCell', {
+            'rideId': ride_id, 'x_game': x_game, 'y_game': y_game, 'z': z, 'direction': direction,
+            'mode': mode, 'expected_maze_entry': expected_maze_entry,
+        }, expect_object=True)
 
     def get_path_objects(self) -> dict[str, Any]:
         return self._send_request('getPathObjects')
@@ -360,9 +376,6 @@ class OpenRCT2API:
 
     def place_station_building(self, ride_id: int, **params: Any) -> dict[str, Any]:
         return self._send_request('placeStationBuilding', {'rideId': ride_id, **params})
-
-    def open_ride(self, ride_id: int) -> Any:
-        return self._send_request('openRide', {'rideId': ride_id})
 
     def save_park(self, filename: str) -> dict[str, Any]:
         return self._send_request('savePark', {'filename': filename})

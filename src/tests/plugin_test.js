@@ -30,6 +30,7 @@ function makeTrack(tileX, tileY, trackType, direction, baseZ, opts) {
         type: "track",
         trackType,
         sequence: 0,
+        isGhost: false,
         direction,
         baseZ,
         // The iterator reports the piece's ORIGIN z, which for downward pieces
@@ -122,7 +123,11 @@ const actionHandlers = {};
 
 // Track segment geometry from the game's own catalog (real descriptor values).
 function seg(type, endX, endY, endZ, endDirection, beginSlope = 0, endSlope = 0, beginBank = 0, endBank = 0) {
-    return { type, endX, endY, endZ, beginDirection: 0, endDirection, beginSlope, endSlope, beginBank, endBank,
+    const group = type === 5 ? 68 : type >= 1 && type <= 3 ? 2 : type === 99 ? 28 :
+        type === 16 || type === 17 || type === 22 || type === 23 ? 16 :
+        type === 42 || type === 43 || type === 44 || type === 45 ? 15 :
+        type >= 18 && type <= 33 ? 6 : type >= 4 && type <= 15 ? 8 : 1;
+    return { type, trackGroup: group, allowsChainLift: true, endX, endY, endZ, beginDirection: 0, endDirection, beginSlope, endSlope, beginBank, endBank,
         elements: [{ x: 0, y: 0, z: 0 }] };
 }
 const TEST_SEGMENTS = [
@@ -151,6 +156,7 @@ global.network = {
 };
 global.map = map;
 global.context = {
+    mode: "normal",
     getAllTrackSegments: () => TEST_SEGMENTS,
     executeAction: (name, args, cb) => {
         const h = actionHandlers[name];
@@ -403,8 +409,9 @@ for (const expected of [1, 3, 0, 6, 12, 16, 17, 18, 19, 42, 43, 99]) {
         "valid pieces include " + expected + " while the station is still being built");
 }
 
-// 4. A ride with no track gets the initial fallback.
+// 4. A ride with no track gets the initial fallback, but a missing ID does not.
 clearTiles();
+assert(!request("getValidNextPieces", {}).success, "candidate reads require an explicit ride ID");
 r2 = request("getValidNextPieces", { rideId: 99 });
 assert(r2.payload.stateCategory === "initial", "no track -> 'initial' category");
 assert(JSON.stringify(r2.payload.validPieces) === JSON.stringify([0, 1, 2, 3]), "initial allows station + flat pieces");
@@ -596,6 +603,8 @@ context.getAllObjects = type => [{ index: 3, identifier: "test.wooden", name: "W
 const objects = request("getLoadedRideObjects").payload;
 assert(objects[0].index === 3 && objects[0].ride_types[0] === 52 && objects[0].track_support === "unknown",
     "loaded ride object discovery keeps track support unknown");
+
+global.park = { research: { inventedItems: [{ type: "ride", rideType: 52, object: 3 }], uninventedItems: [] } };
 
 // A rejected create action must not be mistaken for a successful ride ID.
 let namingCalls = 0;
@@ -846,11 +855,20 @@ assert(!request("removePathTile", { x: 30, y: 30, z: 14, expected_path: { ...sel
 assert(request("removePathTile", { x: 30, y: 30, z: 14, expected_path: selectedPath }).success && pathActions === 2 &&
     tiles.get("30,30")[1] === overhead, "guarded removal retains overhead track");
 ground.slope = 1;
-assert(!request("placePathTile", pathParams).success && pathActions === 2, "sloped ground is outside flat-path scope");
-ground.slope = 0; ground.waterHeight = 16;
-assert(!request("placePathTile", pathParams).success && pathActions === 2, "water is outside flat-path scope");
-ground.waterHeight = 0; tiles.get("30,30").push({ type: "small_scenery", baseZ: 112 });
-assert(!request("placePathTile", pathParams).success && pathActions === 2, "path placement never clears scenery");
+ground.waterHeight = 16;
+actionHandlers.footpathplace = (args, cb) => {
+    pathActions++;
+    assert(args.z === 160 && args.slopeType === 1 && args.slopeDirection === 2 && args.direction === 255,
+        "elevated sloped path uses the caller's lower height and uphill direction without directional wall clearing");
+    cb({ cost: 150 });
+};
+assert(request("placePathTile", { ...pathParams, z: 20, slope_direction: 2 }).success && pathActions === 3,
+    "bridge/sloped placement leaves terrain, water and support clearance to native action");
+assert(!request("placePathTile", { ...pathParams, slope_direction: 4 }).success && pathActions === 3,
+    "invalid slope directions reject before action");
+ground.slope = 0; ground.waterHeight = 0;
+tiles.get("30,30").push({ type: "small_scenery", baseZ: 112 });
+assert(!request("placePathTile", pathParams).success && pathActions === 3, "path placement never clears local scenery");
 const saves = [];
 context.saveGame = options => saves.push(options.filename);
 const saveName = "mcp-contract-0123456789abcdef0123456789abcdef";
@@ -944,6 +962,351 @@ assert(confirmedPrice.success && confirmedPrice.payload.observed_after === null 
     "acknowledged price change survives unavailable financial readback");
 
 // ---------------------------------------------------------------------------
+
+// Registry dispatch is an allowlist with per-endpoint validation, not an arbitrary action API.
+const registryRide = { id: 0, inspectionInterval: 2, minimumWaitingTime: 10, maximumWaitingTime: 60 };
+map.getRide = id => id === 0 ? registryRide : null;
+let registryCalls = [];
+actionHandlers.ridesetsetting = (args, cb) => {
+    registryCalls.push(args);
+    registryRide.inspectionInterval = args.value;
+    cb({});
+};
+const inspection = request("setRideInspectionInterval", { rideId: 0, interval: "every_hour" });
+assert(inspection.success && inspection.payload.observed_before.inspection_interval === 2 &&
+    inspection.payload.observed_after.inspection_interval === 4 && inspection.payload.readback_matches_request &&
+    JSON.stringify(registryCalls) === JSON.stringify([{setting: 5, ride: 0, value: 4}]),
+    "registry maps named inspection intervals to the reviewed normal action and observes both states");
+for (const params of [{rideId: -1, interval: "never"}, {rideId: 0, interval: 6},
+    {rideId: 0, interval: "toString"}, {rideId: 0, interval: "never", action: "cheatset"},
+    {rideId: 99, interval: "never"}]) {
+    assert(!request("setRideInspectionInterval", params).success, "invalid registry inputs reject before mutation");
+}
+context.mode = "title";
+assert(!request("setRideInspectionInterval", {rideId: 0, interval: "never"}).success,
+    "registry actions reject outside normal game mode");
+context.mode = "normal";
+for (const endpoint of ["executeAction", "constructor", "__proto__", "cheatset"]) {
+    assert(!request(endpoint, {rideId: 0}).success, "non-allowlisted action endpoints reject");
+}
+assert(registryCalls.length === 1, "validation does not execute game actions");
+for (const result of [{error: 9, errorTitle: "Cannot set", errorMessage: "Game refusal"}, null]) {
+    actionHandlers.ridesetsetting = (args, cb) => { registryCalls.push(args); cb(result); };
+    const failed = request("setRideInspectionInterval", {rideId: 0, interval: "never"});
+    assert(!failed.success && failed.outcome === (result ? "rejected" : "unknown") &&
+        (!result || failed.error_details.code === 9), "registry preserves rejection versus unknown outcomes");
+}
+assert(registryCalls.length === 3, "unknown outcomes are never retried");
+actionHandlers.ridesetsetting = (args, cb) => cb({});
+const mismatch = request("setRideInspectionInterval", {rideId: 0, interval: "never"});
+assert(mismatch.success && mismatch.payload.readback_matches_request === false,
+    "successful acknowledgement does not imply matching readback");
+actionHandlers.ridesetsetting = (args, cb) => {
+    map.getRide = () => { throw new Error("Readback unavailable"); }; cb({});
+};
+const unreadable = request("setRideInspectionInterval", {rideId: 0, interval: "never"});
+assert(unreadable.success && unreadable.payload.observed_after === null &&
+    unreadable.payload.state_error.includes("Readback unavailable"),
+    "registry retains acknowledged action when readback fails");
+
+// Declarative observations never execute actions, and boolean setters use numeric engine values.
+const projectedRide = { type: 52, name: "Observed", status: "closed", mode: 1, departFlags: 0,
+    minimumWaitingTime: 10, maximumWaitingTime: 60, liftHillSpeed: 5, minLiftHillSpeed: 3,
+    maxLiftHillSpeed: 20, music: 0, flags: 256, inspectionInterval: 2, reliability: 97.5, downtime: 0, age: 3 };
+map.getRide = id => id === 0 ? projectedRide : null;
+let projectedActions = 0;
+actionHandlers.ridesetsetting = (args, cb) => {
+    projectedActions++;
+    assert(args.setting === 6 && args.value === 1, "boolean setting maps to a normal numeric engine argument");
+    projectedRide.flags |= 8192; cb({});
+};
+const maintenanceProjection = request("getRideMaintenanceStatus", {rideId: 0});
+assert(maintenanceProjection.success && maintenanceProjection.payload.reliability_percent === 97.5 &&
+    maintenanceProjection.payload.due_inspection === true && maintenanceProjection.payload.broken_down === false,
+    "read-only projection preserves decimal percentages and decodes reviewed flags");
+const operatingProjection = request("getRideOperatingSettings", {rideId: 0});
+assert(operatingProjection.success && operatingProjection.payload.minimum_lift_hill_speed_mph === 3 &&
+    operatingProjection.payload.music_enabled === false, "operating observation exposes discovery and bounds");
+context.getAllObjects = type => { assert(type === "music", "object type is fixed by the registry");
+    return [{ index: 2, identifier: "test.music", name: "Music" }]; };
+const loadedMusic = request("getLoadedMusicObjects", {});
+assert(loadedMusic.success && loadedMusic.payload.objects[0].index === 2 && projectedActions === 0,
+    "loaded-object observations are read-only and return park-local indices");
+assert(!request("getLoadedMusicObjects", {object_type: "ride"}).success &&
+    !request("getRideOperatingSettings", {rideId: 999}).success,
+    "read projections reject client-selected sources and absent rides");
+assert(!request("setRideMusicEnabled", {rideId: 0, enabled: 1}).success && projectedActions === 0,
+    "raw boolean input must really be a boolean");
+const enabledMusic = request("setRideMusicEnabled", {rideId: 0, enabled: true});
+assert(enabledMusic.success && enabledMusic.payload.readback_matches_request && projectedActions === 1,
+    "boolean action reads back its flag independently from playback");
+projectedRide.reliability = NaN;
+assert(!request("getRideMaintenanceStatus", {rideId: 0}).success && projectedActions === 1,
+    "unavailable numeric observations fail without mutation or fabricated zero values");
+
+// Every generated action reaches exactly the reviewed native visitor with typed mappings.
+const fullRegistry = JSON.parse(fs.readFileSync(path.join(__dirname, "../openrct2_mcp/actions.json"), "utf8"));
+function projectionFixture(fields, args) {
+    const root = {};
+    for (const field of fields || []) {
+        let value = field.type === "boolean" ? false : field.type === "string" ? "Observed" : 0;
+        if (field.type === "record") value = projectionFixture(field.fields, args);
+        if (field.type === "array") value = [field.fields ? projectionFixture(field.fields, args) :
+            field.item_type === "string" ? "observed" : 0];
+        if (field.bit_mask) value = 0;
+        if (field.index_arg) value = [field.member ? {[field.member]: value} : value];
+        if (field.method) { root[field.method] = () => value; continue; }
+        let object = root;
+        const parts = field.property.split(".");
+        for (const part of parts.slice(0, -1)) object = object[part] || (object[part] = {});
+        object[parts[parts.length - 1]] = value;
+    }
+    return root;
+}
+let fullActionCount = 0;
+for (const op of fullRegistry.operations.filter(op => op.action)) {
+    const wire = {}, requested = {}, expected = {...op.constants};
+    for (const arg of op.arguments || []) {
+        const value = arg.values ? Object.keys(arg.values)[0] : arg.type === "string" ? "New name" :
+            arg.type === "boolean" ? true : arg.minimum || 0;
+        wire[arg.wire_name] = value; requested[arg.name] = value;
+        expected[arg.action_field] = arg.boolean_as_integer ? Number(value) : arg.values ? arg.values[value] : value;
+    }
+    const target = projectionFixture(op.readback && op.readback.fields, requested);
+    if (op.arguments.some(arg => arg.name === "ride_id")) Object.assign(target, {mode: 1, vehicles: [65535], stations: [], object: {flags: 0}});
+    target.type = op.arguments.some(arg => arg.name === "ride_id") ? 52 : op.entity_type || "staff";
+    map.getRide = () => target; map.getEntity = () => target;
+    context.getAllObjects = () => [{index: 0, rideType: [0, 52]}];
+    park.research.inventedItems = [{type: "ride", rideType: 0, object: 0}, {type: "ride", rideType: 52, object: 0}];
+    context.mode = op.allowed_modes ? op.allowed_modes[0] : "normal";
+    if (op.target === "park") Object.assign(park, target);
+    if (op.target === "research") Object.assign(park.research, target);
+    if (op.target === "context") Object.assign(context, target);
+    let seen;
+    actionHandlers[op.action] = (args, cb) => { fullActionCount++; seen = args;
+        cb({cost: 5, ride: 0, peep: 0, bannerIndex: 0}); };
+    const result = request(op.endpoint, wire);
+    assert(result.success && JSON.stringify(seen) === JSON.stringify(expected),
+        "reviewed native action binding: " + op.name + (result.error ? " " + result.error : ""));
+    if (op.result_fields && op.result_fields.some(field => field.property === "peep")) {
+        assert(result.payload.game_result.entity_id === 0, "native creation result preserves entity ID zero");
+    }
+}
+assert(fullActionCount === fullRegistry.operations.filter(op => op.action).length,
+    "generated actions submit once each, including boolean native args and fixed subtypes");
+context.mode = "normal";
+let editorSaved;
+context.mode = "scenario_editor"; context.saveGame = options => { editorSaved = options.filename; };
+const editorCheckpoint = request("savePark", {filename: "mcp-editor-1234567890abcdef1234567890abcdef"});
+assert(editorCheckpoint.success && editorCheckpoint.payload.file_written === "unknown" &&
+    editorSaved === "mcp-editor-1234567890abcdef1234567890abcdef",
+    "editor park-data checkpoints retain UUID-only naming and unknown persistence");
+context.mode = "normal";
+const callsBeforeReads = fullActionCount;
+map.getEntity = id => id === 0 ? {id: 0, type: "guest", thoughts: [
+    {type: "lost", item: 0, freshness: 1, freshTimeout: 2},
+    {type: "hungry", item: 3, freshness: 4, freshTimeout: 5}]} : null;
+const thoughts = request("getGuestThoughts", {guest_id: 0, offset: 1, limit: 1});
+assert(thoughts.success && thoughts.payload.guest_id === 0 && thoughts.payload.thoughts_total === 2 &&
+    JSON.stringify(thoughts.payload.thoughts) === JSON.stringify([
+        {type: "hungry", item: 3, freshness: 4, fresh_timeout: 5}]),
+    "paged nested records preserve total, selected fields and entity ID zero");
+assert(!request("getGuestThoughts", {guest_id: 0, offset: 0, limit: 257}).success &&
+    !request("getGuestThoughts", {guest_id: 9, offset: 0, limit: 1}).success,
+    "array page bounds and missing entity reject without actions");
+map.getEntity = () => ({id: 0, type: "staff", patrolArea: {tiles: [{x: 12, y: 34}]}});
+const patrol = request("getStaffPatrolTiles", {staff_id: 0, offset: 0, limit: 1});
+assert(patrol.success && patrol.payload.tiles[0].x_tile === 12 && patrol.payload.tiles[0].y_tile === 34,
+    "patrol reads retain tile indices rather than mislabeling them game coordinates");
+park.getMonthlyExpenditure = category => { assert(category === "wages", "accounting enum reaches native reader"); return [0, -15]; };
+const expenditure = request("getMonthlyExpenditure", {category: "wages"});
+assert(expenditure.success && expenditure.payload.amounts_raw_total === 2 && expenditure.payload.amounts_raw[1] === -15,
+    "reviewed read method projects a scalar array without mutation");
+context.getAllObjects = () => [];
+assert(!request("setStaffCostume", {staff_id: 0, costume_object: 99}).success &&
+    !request("setRideStationStyle", {rideId: 0, station_object: 99}).success,
+    "unloaded costume/station objects reject before unsafe native dereferences");
+assert(!request("setEditorLandRights", {x1_game: 32, y1_game: 32, x2_game: 32, y2_game: 32,
+    setting: "unown_land", ownership_mask: 0}).success, "editor ownership cannot grant land during normal play");
+assert(!request("deleteRide", {rideId: 65536}).success &&
+    !request("getCoasterState", {rideId: 65536}).success,
+    "out-of-range ride IDs cannot wrap to a different ride in native uint16 conversion");
+assert(!request("setTrackBrakeSpeed", {x_game: 32, y_game: 32, z_game: 112, track_type: "flat", speed: 10}).success,
+    "brake speed cannot overwrite unrelated track/maze union data");
+const surfaceForProjection = {type: "surface", baseHeight: 14, baseZ: 112, clearanceHeight: 14,
+    clearanceZ: 112, occupiedQuadrants: 0, isGhost: false, isHidden: false,
+    slope: 0, surfaceStyle: 0, edgeStyle: 0, waterHeight: 0, grassLength: 0,
+    ownership: 128, parkFences: 0, hasOwnership: true, hasConstructionRights: false};
+Object.defineProperty(surfaceForProjection, "trackType", {get() { throw new Error("Wrong element getter"); }});
+map.getTile = () => ({numElements: 1, elements: [surfaceForProjection]});
+const tileProjection = request("getMapTile", {x_tile: 1, y_tile: 2});
+assert(tileProjection.success && tileProjection.payload.elements_total === 1 &&
+    tileProjection.payload.elements[0].base_z_game === 112 && tileProjection.payload.elements[0].track_type === null &&
+    tileProjection.payload.elements[0].brake_booster_speed === null,
+    "conditional world projections never read an inapplicable native getter");
+context.mode = "title"; context.paused = false; context.gameSpeed = 1; context.apiVersion = 124;
+assert(request("getGameState").success && fullActionCount === callsBeforeReads,
+    "read projections and rejected selections never submit mutations, and game-state discovery works outside a park");
+
+// Acknowledgement survives a later track-inspection exception, for both mutations.
+const tileReaderBeforeInspectionFailure = map.getTile;
+const executorBeforeInspectionFailure = context.executeAction;
+for (const endpoint of ["placeTrackPiece", "deleteLastTrackPiece"]) {
+    clearTiles();
+    map.getTile = (x, y) => {
+        const entries = tiles.get(x + "," + y);
+        return entries ? { numElements: entries.length, elements: entries } : null;
+    };
+    const piece = makeTrack(8, 8, 0, 0, 112);
+    place(7, piece);
+    linkSeq([piece], false);
+    let acknowledgements = 0;
+    context.executeAction = (name, args, cb) => {
+        acknowledgements++;
+        map.getTile = () => { throw new Error("Post-action tile inspection unavailable"); };
+        cb(name === "trackplace" ? { position: { x: args.x, y: args.y, z: args.z } } : {});
+    };
+    const params = endpoint === "placeTrackPiece" ? { ...trackArgs, ride: 7, includeState: true } : { rideId: 7 };
+    const response = request(endpoint, params);
+    assert(acknowledgements === 1 && !response.success && response.outcome === "confirmed" &&
+        response.error_details.category === "post_action_inspection" && response.error.includes("tile inspection"),
+        endpoint + " retains acknowledgement when post-action inspection throws, without retry");
+}
+map.getTile = tileReaderBeforeInspectionFailure;
+context.executeAction = executorBeforeInspectionFailure;
+
+// Native scalar validation alone does not enforce availability of every UI control.
+context.mode = "normal";
+map.getRide = () => ({type: 33, object: {flags: 0}, mode: 1, vehicles: [65535], stations: []});
+assert(!request("setRideTrainsReversed", {rideId: 0, reversed: true}).success &&
+    !request("setRideCircuitCount", {rideId: 0, circuits: 2}).success,
+    "flat rides cannot gain reversal/multiple-circuit controls through native setting gaps");
+map.getRide = () => ({type: 52, object: {flags: 8388608}, mode: 1, vehicles: [65535], stations: []});
+assert(!request("setRideTrainsReversed", {rideId: 0, reversed: true}).success,
+    "a vehicle's native noReverseOption flag is respected independently of its ride type");
+
+// Ordinary-player construction uses explicit selections, not the coaster iterator.
+context.mode = "normal";
+clearTiles();
+map.getTile = (x, y) => ({numElements: (tiles.get(x + "," + y) || []).length,
+    elements: tiles.get(x + "," + y) || []});
+const buildObjects = [{index: 2, identifier: "test.carousel", name: "Carousel", rideType: [33]},
+    {index: 3, identifier: "test.shop", name: "Shop", rideType: [28]},
+    {index: 4, identifier: "test.wooden", name: "Wooden", rideType: [52]}];
+context.getAllObjects = () => buildObjects;
+park.research.inventedItems = buildObjects.map(obj => ({type: "ride", rideType: obj.rideType[0], object: obj.index}));
+park.research.uninventedItems = [];
+let buildingRide = {id: 0, type: 33, status: "closed", guestCount: 0, vehicles: [], stations: [], object: buildObjects[0]};
+map.getRide = id => id === 0 ? buildingRide : null;
+const options = request("getRideBuildOptions");
+assert(options.success && options.payload.ride_types.filter(type => type.footprint_supported).length === 24 &&
+    options.payload.ride_types.find(type => type.ride_type === 33).loaded_objects[0].research === "invented",
+    "normal build options identify 24 native footprints and actual loaded/invented object choices");
+let constructionCalls = 0;
+actionHandlers.trackplace = (args, cb) => {
+    constructionCalls++;
+    assert(args.trackType === 266 && args.rideType === 33 && args.ride === 0 && args.x === 320 && args.z === 112 &&
+        args.trackPlaceFlags === 0 && args.isFromTrackDesign === false, "flat ride uses exactly its native footprint and ordinary flags");
+    place(0, makeTrack(10, 10, 266, 0, 112));
+    cb({cost: 500});
+};
+const footprintParams = {rideId: 0, x: 10, y: 10, z: 14, direction: 0};
+for (const change of [{status: "open"}, {guestCount: 1}, {vehicles: [3]}, {type: 52}]) {
+    const original = {...buildingRide}; Object.assign(buildingRide, change);
+    assert(!request("placeRideFootprint", footprintParams).success && constructionCalls === 0,
+        "footprint requires an empty closed flat ride without guests or vehicles");
+    buildingRide = original;
+}
+buildingRide.vehicles = [65535]; // Native null EntityId for an uninstantiated train.
+const flatPlaced = request("placeRideFootprint", footprintParams);
+assert(flatPlaced.success && flatPlaced.payload.observed_after.elements_total === 1 && constructionCalls === 1,
+    "footprint action reads back physical elements without assuming a linear circuit");
+assert(!request("placeRideFootprint", footprintParams).success && constructionCalls === 1,
+    "a repeated footprint placement cannot duplicate an already-built ride");
+const fragment = makeTrack(12, 10, 0, 0, 112); place(0, fragment);
+const disconnectedLayout = request("getRideLayout", {rideId: 0, offset: 1, limit: 1});
+assert(disconnectedLayout.success && disconnectedLayout.payload.elements_total === 2 &&
+    disconnectedLayout.payload.elements[0].selection.x === 12, "layout inspection paginates even without a connected track iterator");
+const selection = disconnectedLayout.payload.elements[0].selection;
+actionHandlers.trackremove = (args, cb) => {
+    constructionCalls++;
+    assert(args.x === 384 && args.z === 112 && args.sequence === 0 && args.trackType === 0,
+        "chosen removal submits the exact element height/sequence, not an endpoint or track origin height");
+    tiles.delete("12,10"); cb({cost: -20});
+};
+assert(!request("removeSelectedTrackPiece", {rideId: 0, selection: {...selection, base_z_game: 128}}).success &&
+    constructionCalls === 1, "stale selected track cannot mutate");
+const wrongRide = makeTrack(12, 10, 0, 0, 112); place(9, wrongRide);
+assert(!request("removeSelectedTrackPiece", {rideId: 0, selection}).success && constructionCalls === 1,
+    "a coincident native selector from another ride is ambiguous and rejected");
+tiles.get("12,10").pop();
+assert(request("removeSelectedTrackPiece", {rideId: 0, selection}).payload.observed_after.elements_total === 1 &&
+    constructionCalls === 2, "explicit interior/disconnected removal retains unrelated pieces");
+
+// Footprint connection sides come from the native sequence flags, not a guessed rectangle.
+const layoutBeforeBuildings = request("getRideLayout", {rideId: 0, offset: 0, limit: 256}).payload;
+assert(JSON.stringify(layoutBeforeBuildings.elements[0].connection_directions) === "[]",
+    "carousel center does not falsely advertise entrance connections");
+const edgePiece = makeTrack(11, 10, 266, 0, 112); edgePiece.sequence = 1; edgePiece.station = null; place(0, edgePiece);
+buildingRide.stations = [{start: {x: 320, y: 320, z: 112}, length: 1, entrance: null, exit: null}];
+let buildingCalls = 0;
+actionHandlers.rideentranceexitplace = (args, cb) => {
+    buildingCalls++;
+    buildingRide.stations[0].entrance = {x: args.x, y: args.y, z: 112, direction: args.direction}; cb({cost: 0});
+};
+const edgeDirections = request("getRideLayout", {rideId: 0, offset: 1, limit: 1}).payload.elements[0].connection_directions;
+const outward = edgeDirections[0];
+const deltas = [[-1, 0], [0, 1], [1, 0], [0, -1]];
+const entranceParams = {rideId: 0, building: "entrance", x: 11 + deltas[outward][0], y: 10 + deltas[outward][1],
+    direction: (outward + 2) % 4, expected_position: null};
+assert(request("placeStationBuilding", entranceParams).success && buildingCalls === 1,
+    "a flat ride entrance accepts its source-reviewed sequence connection side");
+
+// Research compatibility is checked before native creation, which does not enforce it itself.
+let creationCalls = 0;
+actionHandlers.ridecreate = (args, cb) => { creationCalls++; assert(args.rideObject === 4, "automatic creation selects an invented compatible object"); cb({ride: 0}); };
+assert(!request("createRide", {...createParams, rideObject: 3}).success && creationCalls === 0,
+    "creation rejects a loaded object for the wrong ride type before native action");
+park.research.inventedItems = [];
+assert(!request("createRide", createParams).success && creationCalls === 0,
+    "unknown or unresearched objects are not build permissions");
+park.research.inventedItems = [{type: "ride", object: 4, rideType: 52}];
+assert(request("createRide", {...createParams, name: ""}).success && creationCalls === 1,
+    "ordinary researched creation still preserves ride ID zero");
+const forbiddenTrack = request("queryTrackPiece", {...trackArgs, rideType: 11, trackType: 5, hasChainLift: false});
+assert(!forbiddenTrack.success, "track groups hidden behind cheats are not accepted merely because native trackplace would accept them");
+
+// Maze callbacks never reach unsafe native code with an invalid ride/type or fill target.
+clearTiles();
+buildingRide = {id: 0, type: 20, status: "closed", guestCount: 0, vehicles: [], stations: []};
+let mazeArgs;
+actionHandlers.mazesettrack = (args, cb) => {
+    constructionCalls++; mazeArgs = args;
+    if (args.mode === 0) {
+        const el = makeTrack(20, 20, 101, 0, 112); el.mazeEntry = 65527; place(0, el);
+    } else tiles.delete("20,20");
+    cb({cost: args.mode === 0 ? 100 : 0});
+};
+const mazeParams = {rideId: 0, x_game: 640, y_game: 640, z: 14, direction: 0, mode: "build", expected_maze_entry: null};
+const beforeMazeCalls = constructionCalls;
+assert(!request("editMazeCell", {...mazeParams, rideId: 9}).success &&
+    !request("editMazeCell", {...mazeParams, x_game: 641}).success && constructionCalls === beforeMazeCalls,
+    "missing maze and misaligned half-cell coordinates reject before native query/action");
+const mazeBuilt = request("editMazeCell", mazeParams);
+assert(mazeBuilt.success && mazeArgs.isInitialPlacement === true && mazeArgs.z === 112 &&
+    mazeBuilt.payload.observed_after.elements[0].maze_entry === 65527, "first maze cell uses native initial placement and reads the maze mask");
+assert(!request("editMazeCell", mazeParams).success && constructionCalls === beforeMazeCalls + 1,
+    "stale maze tile mask rejects without retry");
+assert(request("editMazeCell", {...mazeParams, x_game: 656, direction: 2, mode: "fill", expected_maze_entry: 65527}).success &&
+    mazeArgs.mode === 2 && mazeArgs.isInitialPlacement === false && constructionCalls === beforeMazeCalls + 2,
+    "fill validates the previous half-cell and submits the actual native fill enum, not stale SDK prose");
+assert(!request("editMazeCell", {...mazeParams, mode: "fill"}).success,
+    "maze fill cannot query an empty target or manufacture a cursor tile");
+
+for (const endpoint of ["replaceGuestFlagsRaw", "resizeMap", "setEditorLandRights", "placeParkEntrance", "removeParkEntrance", "placeGuestSpawn"]) {
+    assert(!request(endpoint, {}).success, "non-player mutation is not registered: " + endpoint);
+}
+assert(!request("setGameSpeed", {speed: 5}).success, "debug speeds remain unavailable even in normal mode");
 
 if (failures > 0) {
     console.log(failures + " assertion(s) failed");

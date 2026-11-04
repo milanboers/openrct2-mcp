@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "pydantic>=2.13.5,<3"]
 build-backend = "hatchling.build"
 
 [project]
@@ -21,6 +21,22 @@ dev = [
 [project.scripts]
 openrct2-mcp = "openrct2_mcp.mcp_server:main"
 
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
+
+# Rebuild editable bindings when their definition or generator changes.
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "hatch_build.py" },
+    { file = "scripts/generate_actions.py" },
+    { file = "scripts/audit_game_api.py" },
+    { file = "docs/game-api-surface.json" },
+    { file = "docs/game-api-policy.json" },
+    { file = "docs/custom-tools.json" },
+    { file = "src/openrct2_mcp/actions.json" },
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/openrct2_mcp"]
 
@@ -35,6 +51,7 @@ include = [
     "/README.md",
     "/LICENSE",
     "/pyproject.toml",
+    "/hatch_build.py",
     "/uv.lock",
     "/pytest.ini",
 ]

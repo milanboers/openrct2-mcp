@@ -19,6 +19,9 @@ from openrct2_mcp.metrics import summarize_metrics
 
 ROOT = Path(__file__).resolve().parent.parent
 REQUIRED_TOOLS = {
+    "get_ride_build_options", "get_ride_layout", "place_ride_footprint", "remove_track_piece", "edit_maze_cell",
+    'set_ride_lift_hill_speed', 'set_ride_operating_mode', 'set_ride_circuit_count', 'set_ride_music_enabled', 'set_ride_music_style', 'get_ride_operating_settings', 'get_ride_maintenance_status', 'get_loaded_music_objects',
+    'set_ride_inspection_interval', 'set_ride_name', 'set_ride_minimum_waiting_time', 'set_ride_maximum_waiting_time',
     "create_ride", "get_coaster_state", "get_coaster_view", "close_ride", "place_track_sequence",
     "get_ride_test_report", "check_track_candidates", "preview_track_removal", "remove_terminal_piece",
     "get_loaded_ride_objects", "get_park_status", "get_ride_station_access", "reset_ride",
@@ -35,15 +38,22 @@ def check_archives(sdist: Path, wheel: Path) -> None:
     with tarfile.open(sdist) as archive:
         files = {name.split('/', 1)[1] for name in archive.getnames() if '/' in name}
     required = {
-        'pyproject.toml', 'uv.lock', 'ridecreation-api.js', 'skills/build-coaster/SKILL.md',
+        'hatch_build.py', 'pyproject.toml', 'uv.lock', 'ridecreation-api.js', 'skills/build-coaster/SKILL.md',
         'docs/reference.md', 'scenarios/sandbox.park', 'scenarios/guest-coaster.json',
         'scripts/smoke_test.py', 'scripts/guest_smoke_test.py', 'scripts/check_ready.py',
         'src/tests/plugin_server.js', 'src/openrct2_mcp/mcp_server.py',
+        'src/openrct2_mcp/construction_tools.py', 'src/openrct2_mcp/coaster_tools.py', 'src/openrct2_mcp/coaster_state.py',
+        'scripts/generate_actions.py', 'scripts/audit_game_api.py', 'src/openrct2_mcp/actions.json',
+        'docs/api-coverage.md', 'docs/game-api-surface.json', 'docs/game-api-policy.json', 'docs/custom-tools.json',
+        'src/openrct2_mcp/_action_client.py', 'src/openrct2_mcp/_action_tools.py',
     }
     if missing := required - files:
         raise RuntimeError(f'Source distribution is missing: {sorted(missing)}')
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
+    for asset in ('actions.json', '_action_client.py', '_action_tools.py', 'coaster_tools.py', 'coaster_state.py', 'construction_tools.py'):
+        if 'openrct2_mcp/' + asset not in names:
+            raise RuntimeError(f'Wheel is missing runtime asset: {asset}')
     if 'openrct2_mcp/mcp_server.py' not in names or any(name.startswith(('src/', 'tests/')) or '/tests/' in name for name in names):
         raise RuntimeError('Wheel must contain openrct2_mcp, without the source tree or tests')
 
@@ -70,7 +80,7 @@ async def check_server(executable: Path, cwd: Path, fixture: Path) -> None:
     log = cwd / 'plugin-stub.log'
     with log.open('wb') as stderr:
         proc = await asyncio.create_subprocess_exec(
-            'node', str(fixture), '--tcp', stdout=asyncio.subprocess.PIPE, stderr=stderr,
+            'node', str(fixture), '--tcp', '--obstruction', stdout=asyncio.subprocess.PIPE, stderr=stderr,
         )
         try:
             bootstrap = json.loads(await asyncio.wait_for(proc.stdout.readline(), timeout=10))
@@ -101,6 +111,43 @@ async def check_server(executable: Path, cwd: Path, fixture: Path) -> None:
                 ride_id = state['ride_id']
                 assert state['piece_count'] == 1 and 'pieces' not in state
                 assert state['stations'][0]['entrance']['status'] == 'absent'
+                registry_names = set(info['registered_actions'])
+                assert registry_names == {op['name'] for op in json.loads((ROOT / 'src/openrct2_mcp/actions.json').read_text())['operations']}
+                custom_names = set(json.loads((ROOT / 'docs/custom-tools.json').read_text()))
+                assert tools.keys() == registry_names | custom_names
+                assert not tools.keys() & {'replace_guest_flags_raw', 'resize_map', 'set_editor_land_rights',
+                                           'place_park_entrance', 'remove_park_entrance', 'place_guest_spawn'}
+                assert tools['set_game_speed'].input_schema['properties']['speed']['maximum'] == 4
+                build_options = await call_object(client, 'get_ride_build_options')
+                assert sum(row['footprint_supported'] for row in build_options['ride_types']) == 24
+                layout = await call_object(client, 'get_ride_layout', ride_id=ride_id)
+                assert layout['elements_total'] == 1 and layout['elements'][0]['selection']['sequence'] == 0
+                assert tools['delete_ride'].annotations.destructive_hint is True
+                assert tools['close_ride'].annotations.idempotent_hint is False
+                renamed = await call_object(client, 'set_ride_name', ride_id=ride_id, name='Renamed café contract')
+                assert renamed['readback_matches_request'] and renamed['observed_after']['name'] == 'Renamed café contract'
+                inspected = await call_object(client, 'set_ride_inspection_interval', ride_id=ride_id, interval='never')
+                assert inspected['observed_after']['inspection_interval'] == 6
+                minimum = await call_object(client, 'set_ride_minimum_waiting_time', ride_id=ride_id, seconds=70)
+                assert minimum['observed_after'] == {'minimum_waiting_time_seconds': 70, 'maximum_waiting_time_seconds': 70}
+                maximum = await call_object(client, 'set_ride_maximum_waiting_time', ride_id=ride_id, seconds=15)
+                assert maximum['observed_after'] == {'minimum_waiting_time_seconds': 15, 'maximum_waiting_time_seconds': 15}
+                operating = await call_object(client, 'get_ride_operating_settings', ride_id=ride_id)
+                assert operating['mode_raw'] == 1 and operating['minimum_lift_hill_speed_mph'] == 3
+                maintenance = await call_object(client, 'get_ride_maintenance_status', ride_id=ride_id)
+                assert maintenance['reliability_percent'] == 100 and maintenance['broken_down'] is False
+                music = await call_object(client, 'get_loaded_music_objects')
+                assert music['objects'][0]['identifier'] == 'rct2.music.gentle'
+                mode = await call_object(client, 'set_ride_operating_mode', ride_id=ride_id, mode='continuous_circuit')
+                assert mode['readback_matches_request'] and mode['observed_after']['mode_raw'] == 1
+                speed = await call_object(client, 'set_ride_lift_hill_speed', ride_id=ride_id, speed_mph=6)
+                assert speed['observed_after']['lift_hill_speed_mph'] == 6
+                circuits = await call_object(client, 'set_ride_circuit_count', ride_id=ride_id, circuits=2)
+                assert circuits['circuits'] == 2 and circuits['state_status'] == 'not_requested'
+                enabled = await call_object(client, 'set_ride_music_enabled', ride_id=ride_id, enabled=True)
+                assert enabled['readback_matches_request'] and enabled['observed_after']['music_enabled'] is True
+                style = await call_object(client, 'set_ride_music_style', ride_id=ride_id, music_object=0)
+                assert style['observed_after']['music_object_index'] == 0
                 finances = await call_object(client, 'get_ride_finances', ride_id=ride_id)
                 assert finances['prices'][0]['price_raw'] == 10
                 assert finances['running_cost_per_hour_raw'] == 64
@@ -146,6 +193,10 @@ async def check_server(executable: Path, cwd: Path, fixture: Path) -> None:
                 assert base64.b64decode(image.data).startswith(b'\x89PNG\r\n\x1a\n')
                 assert (await call_object(client, 'close_ride', ride_id=ride_id))['operation_outcome'] == 'confirmed'
                 assert (await call_object(client, 'reset_ride', ride_id=ride_id))['vehicles_cleared'] is True
+                vehicles = await call_object(client, 'set_ride_vehicles', ride_id=ride_id, setting='cars_per_train', value=3)
+                assert vehicles['value'] == 3
+                assert (await call_object(client, 'start_ride_test', ride_id=ride_id))['operation_outcome'] == 'confirmed'
+                assert (await call_object(client, 'open_ride', ride_id=ride_id))['operation_outcome'] == 'confirmed'
                 assert (await call_object(client, 'delete_ride', ride_id=ride_id))['operation_outcome'] == 'confirmed'
                 assert await call_json(client, 'list_all_rides') == []
                 placed_path = await call_object(client, 'place_path_tile', x=90, y=90, z=14,

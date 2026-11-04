@@ -16,17 +16,22 @@ spec.loader.exec_module(checker)
 @pytest.fixture
 def archives(tmp_path):
     files = [
-        'pyproject.toml', 'uv.lock', 'ridecreation-api.js', 'skills/build-coaster/SKILL.md',
+        'hatch_build.py', 'pyproject.toml', 'uv.lock', 'ridecreation-api.js', 'skills/build-coaster/SKILL.md',
         'docs/reference.md', 'scenarios/sandbox.park', 'scenarios/guest-coaster.json',
         'scripts/smoke_test.py', 'scripts/guest_smoke_test.py', 'scripts/check_ready.py',
         'src/tests/plugin_server.js', 'src/openrct2_mcp/mcp_server.py',
+        'src/openrct2_mcp/construction_tools.py', 'src/openrct2_mcp/coaster_tools.py', 'src/openrct2_mcp/coaster_state.py',
+        'scripts/generate_actions.py', 'scripts/audit_game_api.py', 'src/openrct2_mcp/actions.json',
+        'docs/api-coverage.md', 'docs/game-api-surface.json', 'docs/game-api-policy.json', 'docs/custom-tools.json',
+        'src/openrct2_mcp/_action_client.py', 'src/openrct2_mcp/_action_tools.py',
     ]
     sdist, wheel = tmp_path / 'package.tar.gz', tmp_path / 'package.whl'
     with tarfile.open(sdist, 'w:gz') as archive:
         for name in files:
             archive.addfile(tarfile.TarInfo('package/' + name))
     with zipfile.ZipFile(wheel, 'w') as archive:
-        archive.writestr('openrct2_mcp/mcp_server.py', b'')
+        for asset in ('mcp_server.py', 'actions.json', '_action_client.py', '_action_tools.py', 'coaster_tools.py', 'coaster_state.py', 'construction_tools.py'):
+            archive.writestr('openrct2_mcp/' + asset, b'')
     return sdist, wheel
 
 

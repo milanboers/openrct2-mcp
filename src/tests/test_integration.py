@@ -1,14 +1,12 @@
 """End-to-end integration test: Python MCP client <-> real TCP <-> plugin (JS).
 
 The plugin runs in a node subprocess with a stubbed game API. Python owns a
-real TCP socket that the MCP client connects to, and bridges it to the plugin's
-stdio, so the full wire contract is exercised without the game.
+real TCP listener, so the full wire contract is exercised without the game.
 """
 
+import asyncio
+import json
 import shutil
-import socket
-import subprocess
-import threading
 from pathlib import Path
 
 import pytest
@@ -19,107 +17,46 @@ TESTS_DIR = Path(__file__).resolve().parent
 _has_node = shutil.which("node") is not None
 
 
-class _PluginBridge:
-    """Runs the plugin in node and bridges a local TCP socket to its stdio."""
-
-    def __init__(self) -> None:
-        self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_sock.bind(("127.0.0.1", 0))
-        self.server_sock.listen(1)
-        self.port = self.server_sock.getsockname()[1]
-
-        self.proc = subprocess.Popen(
-            ["node", str(TESTS_DIR / "plugin_server.js")],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        self.stderr_lines: list[str] = []
-        self._wait_ready()
-        self._start_bridge()
-
-    def _wait_ready(self) -> None:
-        ready = threading.Event()
-
-        def drain_stderr() -> None:
-            # readline may buffer READY alongside the preceding log line. A
-            # select() on the OS descriptor would then miss that buffered line.
-            for line in self.proc.stderr:
-                text = line.decode(errors="replace").rstrip()
-                self.stderr_lines.append(text)
-                if text == "READY":
-                    ready.set()
-            ready.set()  # Also wake startup checks when the child exits early.
-
-        threading.Thread(target=drain_stderr, daemon=True).start()
-        if not ready.wait(timeout=10) or "READY" not in self.stderr_lines:
-            self.close()
-            raise RuntimeError("plugin server did not become ready: " + "\n".join(self.stderr_lines))
-
-    def _start_bridge(self) -> None:
-        def accept_and_bridge() -> None:
-            conn, _ = self.server_sock.accept()
-
-            def to_node() -> None:
-                try:
-                    while True:
-                        data = conn.recv(4096)
-                        if not data:
-                            break
-                        self.proc.stdin.write(data)
-                        self.proc.stdin.flush()
-                except Exception:
-                    pass
-
-            def from_node() -> None:
-                try:
-                    while True:
-                        # read1: don't block filling the pipe's internal buffer.
-                        data = self.proc.stdout.read1(4096)
-                        if not data:
-                            break
-                        conn.sendall(data)
-                except Exception:
-                    pass
-
-            threading.Thread(target=to_node, daemon=True).start()
-            threading.Thread(target=from_node, daemon=True).start()
-
-        threading.Thread(target=accept_and_bridge, daemon=True).start()
-
-    def close(self) -> None:
-        try:
-            self.server_sock.close()
-        except Exception:
-            pass
-        self.proc.terminate()
-        try:
-            self.proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            self.proc.kill()
-            self.proc.wait()
+@pytest.fixture
+def anyio_backend():
+    return 'asyncio'
 
 
 @pytest.fixture
-def plugin_server():
-    bridge = _PluginBridge()
-    old_client = mcp_server.api_client
-    mcp_server.api_client = mcp_server.OpenRCT2API(host="127.0.0.1", port=bridge.port)
-    try:
-        yield bridge.port
-    finally:
-        mcp_server.api_client._close_connection()
-        mcp_server.api_client = old_client
-        bridge.close()
+async def plugin_server(tmp_path):
+    if not _has_node:
+        pytest.skip('node is required for integration tests')
+    with (tmp_path / 'plugin.log').open('wb') as log:
+        proc = await asyncio.create_subprocess_exec(
+            'node', str(TESTS_DIR / 'plugin_server.js'), '--tcp', stdout=asyncio.subprocess.PIPE, stderr=log,
+        )
+        try:
+            bootstrap = json.loads(await asyncio.wait_for(proc.stdout.readline(), timeout=10))
+            api = mcp_server.OpenRCT2API(host='127.0.0.1', port=bootstrap['port'])
+            try:
+                assert api.get_plugin_info()['park_name'] == bootstrap['park_name']
+                yield api
+            finally:
+                api.close()
+        finally:
+            if proc.returncode is None:
+                proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
 
 
-@pytest.mark.skipif(not _has_node, reason="node is required for integration tests")
-def test_full_build_flow(plugin_server) -> None:
+@pytest.mark.anyio
+async def test_full_build_flow(plugin_server) -> None:
     """Create a ride, build a station and track, query state, undo, list, delete."""
+    from openrct2_mcp.coaster_tools import CoasterTools
+
+    tools = CoasterTools(plugin_server)
     # 1. Create a ride. The game places the first station piece and classifies
     # it as an EndStation (it auto-assigns begin/middle/end by geometry).
-    result = mcp_server.create_ride(name="Integration", ride_type=52)
+    result = tools.create_ride(name="Integration", ride_type=52)
     assert isinstance(result, list)
     state = result[0]
     assert state["success"] is True
@@ -130,20 +67,20 @@ def test_full_build_flow(plugin_server) -> None:
     assert state["pieces"][0]["trackType"] == "EndStation"
     assert state["is_circuit_complete"] is False
     # The requested name is applied to the ride.
-    rides = mcp_server.list_all_rides()
+    rides = tools.list_all_rides()
     assert rides[0]["name"] == "Integration", f"ride name not applied: {rides}"
 
     # 2. An unknown piece is rejected.
-    result = mcp_server.place_track_segment(1, "Banana")
+    result = tools.place_track_segment(1, "Banana")
     assert result[0]["success"] is False
     assert result[0]["operation_outcome"] == "rejected"
     assert "Invalid track type" in result[0]["error_message"]
 
     # 3. Build a 4-piece station (the game keeps reclassifying as we extend it).
     for _ in range(2):
-        result = mcp_server.place_track_segment(1, "MiddleStation")
+        result = tools.place_track_segment(1, "MiddleStation")
         assert result[0]["success"] is True
-    result = mcp_server.place_track_segment(1, "EndStation")
+    result = tools.place_track_segment(1, "EndStation")
     assert result[0]["success"] is True
     assert result[0]["pieces"][-1]["trackType"] == "EndStation"
     assert len(result[0]["pieces"]) == 4
@@ -151,7 +88,7 @@ def test_full_build_flow(plugin_server) -> None:
 
     # 4. Lay two flat pieces of track.
     for _ in range(2):
-        result = mcp_server.place_track_segment(1, "Flat")
+        result = tools.place_track_segment(1, "Flat")
         assert result[0]["success"] is True
     assert len(result[0]["pieces"]) == 6
     assert result[0]["is_circuit_complete"] is False
@@ -163,94 +100,86 @@ def test_full_build_flow(plugin_server) -> None:
     assert "x" in flat["endpoint"] and "direction" in flat["endpoint"]
 
     # 5. State round-trip.
-    result = mcp_server.get_coaster_state(1)
+    result = tools.get_coaster_state(1)
     assert result[0]["success"] is True
     assert len(result[0]["pieces"]) == 6
 
     # 6. Undo the last piece.
-    result = mcp_server.undo_last_piece(1)
+    result = tools.undo_last_piece(1)
     assert result[0]["success"] is True
     assert len(result[0]["pieces"]) == 5
 
     # 7. List rides (id preserved), then delete all.
-    rides = mcp_server.list_all_rides()
+    rides = tools.list_all_rides()
     assert len(rides) == 1
     assert rides[0]["id"] == 1
     assert rides[0]["type"] == 52
-    result = mcp_server.delete_all_rides()
+    result = tools.delete_all_rides()
     assert result["success"] is True
-    assert mcp_server.list_all_rides() == []
+    assert tools.list_all_rides() == []
 
-@pytest.mark.skipif(not _has_node, reason="node is required for integration tests")
-def test_mcp_serialization_and_revision_flow(plugin_server):
-    import asyncio
-    import json
+@pytest.mark.anyio
+async def test_mcp_serialization_and_revision_flow(plugin_server):
     from fastmcp import Client
 
-    async def run():
-        async with Client(mcp_server.mcp) as client:
-            async def call(tool_name, **arguments):
-                result = await client.call_tool(tool_name, arguments)
-                assert not result.is_error
-                return json.loads(next(block.text for block in result.content if block.type == 'text'))
+    async with Client(mcp_server.create_server(plugin_server)) as client:
+        async def call(tool_name, **arguments):
+            result = await client.call_tool(tool_name, arguments)
+            assert not result.is_error
+            return json.loads(next(block.text for block in result.content if block.type == 'text'))
 
-            tools = {tool.name: tool for tool in await client.list_tools()}
-            assert tools['get_coaster_state'].annotations.read_only_hint is True
-            assert tools['get_coaster_view'].annotations.read_only_hint is True
-            assert tools['delete_ride'].annotations.destructive_hint is True
-            created = await call('create_ride', name='MCP contract')
-            assert created['operation_outcome'] == 'confirmed'
-            ride_id = created['ride_id']
-            state = await call('get_coaster_state', ride_id=ride_id, include_image=False, compact=True)
-            assert state['piece_count'] == 1
-            assert state['layout_status'] == 'complete'
-            assert 'pieces' not in state
-            for view in ('endpoint', 'elevation'):
-                result = await client.call_tool('get_coaster_view', {'ride_id': ride_id, 'view': view})
-                assert not result.is_error
-                assert [block.type for block in result.content] == ['text', 'image']
-                summary = json.loads(result.content[0].text)
-                assert summary['success'] is True
-                assert summary['view'] == view
-                assert summary['piece_count'] == 1
-            unchanged = await call('get_coaster_state', ride_id=ride_id, include_image=False, compact=True)
-            assert unchanged == state
-            assert (await call('start_ride_test', ride_id=ride_id))['success']
-            assert (await call('close_ride', ride_id=ride_id))['operation_outcome'] == 'confirmed'
-            assert (await call('undo_last_piece', ride_id=ride_id))['piece_count'] == 0
-            assert (await call('delete_ride', ride_id=ride_id))['operation_outcome'] == 'confirmed'
-
-    asyncio.run(run())
+        tools = {tool.name: tool for tool in await client.list_tools()}
+        assert tools['get_coaster_state'].annotations.read_only_hint is True
+        assert tools['get_coaster_view'].annotations.read_only_hint is True
+        assert tools['delete_ride'].annotations.destructive_hint is True
+        created = await call('create_ride', name='MCP contract')
+        assert created['operation_outcome'] == 'confirmed'
+        ride_id = created['ride_id']
+        state = await call('get_coaster_state', ride_id=ride_id, include_image=False, compact=True)
+        assert state['piece_count'] == 1
+        assert state['layout_status'] == 'complete'
+        assert 'pieces' not in state
+        for view in ('endpoint', 'elevation'):
+            result = await client.call_tool('get_coaster_view', {'ride_id': ride_id, 'view': view})
+            assert not result.is_error
+            assert [block.type for block in result.content] == ['text', 'image']
+            summary = json.loads(result.content[0].text)
+            assert summary['success'] is True
+            assert summary['view'] == view
+            assert summary['piece_count'] == 1
+        unchanged = await call('get_coaster_state', ride_id=ride_id, include_image=False, compact=True)
+        assert unchanged == state
+        assert (await call('start_ride_test', ride_id=ride_id))['success']
+        assert (await call('close_ride', ride_id=ride_id))['operation_outcome'] == 'confirmed'
+        assert (await call('undo_last_piece', ride_id=ride_id))['piece_count'] == 0
+        assert (await call('delete_ride', ride_id=ride_id))['operation_outcome'] == 'confirmed'
 
 
-@pytest.mark.skipif(not _has_node, reason='node is required for integration tests')
-def test_flat_path_placement_guards_opening_and_checkpoint_through_mcp(plugin_server):
-    import asyncio
+
+@pytest.mark.anyio
+async def test_flat_path_placement_guards_opening_and_checkpoint_through_mcp(plugin_server):
     from fastmcp import Client
     from openrct2_mcp.client_helpers import call_object
 
-    async def scenario():
-        async with Client(mcp_server.mcp) as client:
-            objects = await call_object(client, 'get_path_objects')
-            assert objects['surfaces'][0]['identifier'] == 'test.surface'
-            placed = await call_object(client, 'place_path_tile', x=90, y=90, z=14,
-                                       surface_object=0, railings_object=0, is_queue=True)
-            assert placed['operation_outcome'] == 'confirmed'
-            path = placed['observed_after']['paths'][0]
-            assert path['is_queue'] is True and path['base_z'] == 14
-            assert path['surface_object'] == path['railings_object'] == 0
-            rejected = await call_object(client, 'place_path_tile', allow_failure=True, x=90, y=90, z=14,
-                                        surface_object=0, railings_object=0)
-            assert rejected['operation_outcome'] == 'rejected'
-            stale = await call_object(client, 'remove_path_tile', allow_failure=True, x=90, y=90, z=14,
-                                     expected_path={**path, 'edges': 15})
-            assert stale['operation_outcome'] == 'rejected'
-            removed = await call_object(client, 'remove_path_tile', x=90, y=90, z=14, expected_path=path)
-            assert removed['operation_outcome'] == 'confirmed' and removed['observed_after']['paths'] == []
-            ride = await call_object(client, 'create_ride', include_image=False, compact=True)
-            opened = await call_object(client, 'open_ride', ride_id=ride['ride_id'])
-            assert opened['operation_outcome'] == 'confirmed'
-            checkpoint = await call_object(client, 'save_park', label='contract')
-            assert checkpoint['save_requested'] is True and checkpoint['file_written'] == 'unknown'
-
-    asyncio.run(scenario())
+    async with Client(mcp_server.create_server(plugin_server)) as client:
+        objects = await call_object(client, 'get_path_objects')
+        assert objects['surfaces'][0]['identifier'] == 'test.surface'
+        placed = await call_object(client, 'place_path_tile', x=90, y=90, z=14,
+                                   surface_object=0, railings_object=0, is_queue=True)
+        assert placed['operation_outcome'] == 'confirmed'
+        path = placed['observed_after']['paths'][0]
+        assert path['is_queue'] is True and path['base_z'] == 14
+        assert path['surface_object'] == path['railings_object'] == 0
+        rejected = await call_object(client, 'place_path_tile', allow_failure=True, x=90, y=90, z=14,
+                                    surface_object=0, railings_object=0)
+        assert rejected['operation_outcome'] == 'rejected'
+        stale = await call_object(client, 'remove_path_tile', allow_failure=True, x=90, y=90, z=14,
+                                 expected_path={**path, 'edges': 15})
+        assert stale['operation_outcome'] == 'rejected'
+        removed = await call_object(client, 'remove_path_tile', x=90, y=90, z=14, expected_path=path)
+        assert removed['operation_outcome'] == 'confirmed' and removed['observed_after']['paths'] == []
+        ride = await call_object(client, 'create_ride', include_image=False, compact=True)
+        opened = await call_object(client, 'open_ride', ride_id=ride['ride_id'])
+        assert opened['operation_outcome'] == 'confirmed'
+        checkpoint = await call_object(client, 'save_park', label='contract')
+        assert checkpoint['save_requested'] is True and checkpoint['file_written'] == 'unknown'

@@ -1,13 +1,15 @@
 """Compatibility requirements shared by diagnostics and mutation preflight."""
 
-PLUGIN_VERSION = '0.15.0'
+from ._action_client import READ_ENDPOINTS as REGISTERED_READ_ENDPOINTS
+
+PLUGIN_VERSION = '0.19.0'
 PROTOCOL_VERSION = 1
 READ_ENDPOINTS = frozenset({
     'getPluginInfo', 'listAllRides', 'getAllTrackSegments', 'getMapArea', 'getCoasterState',
     'getValidNextPieces', 'getTrackHistory', 'getRideStats', 'previewTrackRemoval',
     'getLoadedRideObjects', 'getParkStatus', 'getRideStationAccess', 'queryTrackPiece',
-    'getPathObjects', 'getPathArea', 'getRideFinances',
-})
+    'getPathObjects', 'getPathArea', 'getRideFinances', 'getRideBuildOptions', 'getRideLayout',
+}) | REGISTERED_READ_ENDPOINTS
 
 
 def compatibility_error(info: dict) -> str | None:

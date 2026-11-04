@@ -205,8 +205,8 @@ def test_response_limit_counts_utf8_bytes_and_discards_the_oversized_connection(
 
 @pytest.mark.parametrize('info', [
     {'version': '0.12.0', 'protocol_version': 1},
-    {'version': '0.15.0', 'protocol_version': 2},
-    {'version': '0.15.0', 'protocol_version': True},
+    {'version': '0.19.0', 'protocol_version': 2},
+    {'version': '0.19.0', 'protocol_version': True},
     {},
 ])
 def test_mutation_refuses_incompatible_connection_before_sending_action(info):
@@ -223,7 +223,7 @@ def test_mutation_refuses_incompatible_connection_before_sending_action(info):
 def test_compatible_connection_checks_once_and_rechecks_after_disconnect():
     client = OpenRCT2API()
     with patch.object(client, '_exchange', side_effect=[
-        {'version': '0.15.0', 'protocol_version': 1}, {}, {},
+        {'version': '0.19.0', 'protocol_version': 1}, {}, {},
         {'version': '0.12.0', 'protocol_version': 1},
     ]) as exchange:
         client.delete_ride(7)

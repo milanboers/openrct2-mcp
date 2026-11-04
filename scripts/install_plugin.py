@@ -2,6 +2,8 @@
 
 import argparse
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parent.parent / 'ridecreation-api.js'
@@ -14,6 +16,7 @@ def install(user_dir: Path, overwrite: bool = False) -> Path:
     destination = user_dir / 'plugin' / SOURCE.name
     if destination.exists() and not overwrite:
         raise ValueError(f'Plugin already exists: {destination}. Use --overwrite to replace it.')
+    subprocess.run([sys.executable, str(SOURCE.parent / 'scripts/generate_actions.py')], check=True)
     destination.parent.mkdir(exist_ok=True)
     shutil.copy2(SOURCE, destination)
     return destination
@@ -26,7 +29,7 @@ def main() -> None:
     args = parser.parse_args()
     try:
         destination = install(args.user_dir, args.overwrite)
-    except (ValueError, OSError) as exc:
+    except (ValueError, OSError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f'{exc}\n')
     print(f'Installed {destination}')
     print('Restart OpenRCT2 to load this copy. Save your park first. This script does not restart the game.')

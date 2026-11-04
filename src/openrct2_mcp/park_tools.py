@@ -5,10 +5,10 @@ from typing import Annotated, Any, Callable, Literal, Optional
 from uuid import uuid4
 
 from fastmcp import FastMCP
-from pydantic import Field
+from pydantic import Field, StrictBool
 
 from .api_client import APIError, OpenRCT2API
-from .models import Endpoint, PathTile
+from .models import Direction, Endpoint, ObjectIndex, PathHeight, PathTile, RideId, TileCoordinate
 from .results import mutation_failure, mutation_status
 
 
@@ -59,7 +59,7 @@ def register_park_tools(
             return {'success': False, 'error': str(error)}
 
     @mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': False})
-    def get_path_area(x: int, y: int, radius: Annotated[int, Field(ge=0, le=8)] = 4) -> dict[str, Any]:
+    def get_path_area(x: TileCoordinate, y: TileCoordinate, radius: Annotated[int, Field(strict=True, ge=0, le=8)] = 4) -> dict[str, Any]:
         """Observe bounded paths, edges, heights, queues and ghosts. Not a pathfinder or guest-access proof."""
         try:
             return {'success': True, **get_api().get_path_area(x, y, radius)}
@@ -68,19 +68,23 @@ def register_park_tools(
 
     @mcp.tool(annotations={'openWorldHint': False})
     def place_path_tile(
-        x: int, y: int, z: int, surface_object: int, railings_object: int, is_queue: bool = False,
+        x: TileCoordinate, y: TileCoordinate, z: PathHeight, surface_object: ObjectIndex,
+        railings_object: ObjectIndex, is_queue: StrictBool = False, slope_direction: Optional[Direction] = None,
     ) -> dict[str, Any]:
-        """Place one flat ground-level path; no replacement, bridges or scenery clearing.
+        """Place a flat, elevated or sloped modern path; no replacement or local scenery clearing.
 
-        Coordinates are tiles, Z is in units of 8 and must be even. Use loaded modern
-        surface/railings indices. Overhead track is allowed if the game permits clearance.
+        Coordinates are tiles. Z is the lower end in units of 8 and must be even.
+        A slope rises 2 height units toward slope_direction (0 west, 1 +y, 2 east, 3 -y);
+        null means flat. Terrain, bridge supports and clearance are checked by the game.
+        Use loaded modern surface/railings indices. Overhead track is allowed if the game permits clearance.
         The game assigns queue ownership and connects edges.
         Before/after observations include neighboring paths; these effects are not atomic
         guards or guest-access proof. An acknowledged placement can have unavailable readback.
         """
         try:
             return observed_mutation_result(get_api().place_path_tile(
-                x=x, y=y, z=z, surface_object=surface_object, railings_object=railings_object, is_queue=is_queue,
+                x=x, y=y, z=z, surface_object=surface_object, railings_object=railings_object,
+                is_queue=is_queue, slope_direction=slope_direction,
             ))
         except APIError as error:
             return mutation_failure(error)
@@ -88,9 +92,9 @@ def register_park_tools(
     @mcp.tool(annotations={'openWorldHint': False})
     def place_path_sequence(
         tiles: Annotated[list[PathTile], Field(min_length=1, max_length=256)],
-        surface_object: int, railings_object: int, is_queue: bool = False,
+        surface_object: ObjectIndex, railings_object: ObjectIndex, is_queue: StrictBool = False,
     ) -> dict[str, Any]:
-        """Place 1-256 caller-chosen flat ground-level path tiles in order.
+        """Place 1-256 caller-chosen flat/elevated/sloped path tiles in order.
 
         Uses the same restrictions as place_path_tile, with shared path objects
         and queue flag. No routing, replacement or rollback. Stops on the first
@@ -117,7 +121,8 @@ def register_park_tools(
             if not last['success']:
                 return {
                     **last, 'placed_count': len(placements), 'placements': placements, 'failed_index': index,
-                    'execution_status': 'partial' if len(placements) < len(tiles) else 'completed',
+                    **mutation_status('confirmed', confirmed_steps=len(placements), requested_steps=len(tiles),
+                                      state_available=False),
                     'last_placement': last,
                 }
         return {
@@ -127,14 +132,16 @@ def register_park_tools(
 
     @mcp.tool(annotations={'openWorldHint': False})
     def place_station_building(
-        ride_id: int, building: Literal['entrance', 'exit'], x: int, y: int,
-        direction: Literal[0, 1, 2, 3], expected_position: Optional[Endpoint] = None,
+        ride_id: RideId, building: Literal['entrance', 'exit'], x: TileCoordinate, y: TileCoordinate,
+        direction: Direction, expected_position: Optional[Endpoint] = None,
     ) -> dict[str, Any]:
-        """Place a chosen entrance or exit facing adjacent first-station track.
+        """Place a chosen entrance or exit facing adjacent first-station track, flat footprint or maze.
 
         Coordinates are tiles. Directions: 0 west, 1 +y, 2 east, 3 -y, toward
         the station. Height comes from station 0; exactly one station is supported.
-        Requires a closed ride with known zero guests. Moving an existing building
+        Requires a closed ride with known zero guests. Source-reviewed footprint
+        connection sides apply; shops/facilities have service paths, not station buildings.
+        Moving an existing building
         requires its exact current expected_position (x, y, z, direction) from
         get_ride_station_access. The guard is not a reservation. No paths or scenery
         are replaced. The game action can reset vehicles and change queue edges.
@@ -149,8 +156,8 @@ def register_park_tools(
             return mutation_failure(error, ride_id=ride_id)
 
     @mcp.tool(annotations={'destructiveHint': True, 'openWorldHint': False})
-    def remove_path_tile(x: int, y: int, z: int, expected_path: dict[str, Any]) -> dict[str, Any]:
-        """Remove one flat, non-ghost path, guarded by its exact current get_path_area observation.
+    def remove_path_tile(x: TileCoordinate, y: TileCoordinate, z: PathHeight, expected_path: dict[str, Any]) -> dict[str, Any]:
+        """Remove one non-ghost path (flat, sloped or elevated), guarded by its exact current get_path_area observation.
 
         Use only for authorized work. Neighbor edges and queue assignments can change.
         The observation is not a reservation. Never retry an unknown removal blindly.
@@ -160,18 +167,9 @@ def register_park_tools(
         except APIError as error:
             return mutation_failure(error)
 
-    @mcp.tool(annotations={'openWorldHint': False})
-    def open_ride(ride_id: int) -> dict[str, Any]:
-        """Open a ride through the game's normal status action. Not proof of guest access or completed rides."""
-        try:
-            get_api().open_ride(ride_id)
-            return {'success': True, 'ride_id': ride_id, **mutation_status('confirmed')}
-        except APIError as error:
-            return mutation_failure(error, ride_id=ride_id)
-
     @mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': False})
     def get_ride_guest_report(
-        ride_id: int, observe_seconds: Annotated[float, Field(ge=0, le=60)] = 0,
+        ride_id: RideId, observe_seconds: Annotated[float, Field(strict=True, ge=0, le=60, allow_inf_nan=False)] = 0,
     ) -> dict[str, Any]:
         """Observe customer-counter progress without opening, changing or unpausing the ride.
 
@@ -183,7 +181,7 @@ def register_park_tools(
 
     @mcp.tool(annotations={'openWorldHint': False})
     def save_park(label: str) -> dict[str, Any]:
-        """Request a checkpoint with a fresh UUID filename in the game's save directory.
+        """Request a fresh UUID park-data checkpoint in normal play or the scenario editor.
 
         Label is 1-48 ASCII letters, digits, underscores or hyphens. No paths or existing
         save names are accepted. The game API returns void: file_written stays unknown.

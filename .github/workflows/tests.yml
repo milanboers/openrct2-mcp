@@ -20,5 +20,6 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
       - run: uv sync --locked --extra dev
+      - run: git diff --exit-code -- ridecreation-api.js src/openrct2_mcp/_action_client.py src/openrct2_mcp/_action_tools.py README.md docs/api-coverage.md
       - run: uv run --locked pytest src/tests
       - run: uv run --locked python scripts/check_install.py

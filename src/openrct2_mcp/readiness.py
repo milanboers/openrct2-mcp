@@ -1,9 +1,12 @@
 """Read-only MCP registration and park readiness checks."""
 
+from ._action_client import GENERATED_TOOL_NAMES
 from .client_helpers import call_json, call_object
 from .protocol import compatibility_error
 
-REQUIRED_TOOLS = {
+REQUIRED_TOOLS = GENERATED_TOOL_NAMES | {
+    'set_ride_lift_hill_speed', 'set_ride_operating_mode', 'set_ride_circuit_count', 'set_ride_music_enabled', 'set_ride_music_style', 'get_ride_operating_settings', 'get_ride_maintenance_status', 'get_loaded_music_objects',
+    'set_ride_inspection_interval', 'set_ride_name', 'set_ride_minimum_waiting_time', 'set_ride_maximum_waiting_time',
     'get_plugin_info', 'get_park_status', 'list_all_rides', 'create_ride', 'get_coaster_state',
     'place_track_sequence', 'check_track_candidates', 'preview_track_removal', 'remove_terminal_piece',
     'close_ride', 'reset_ride', 'start_ride_test', 'get_ride_test_report', 'get_coaster_view',

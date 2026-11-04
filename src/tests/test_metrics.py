@@ -2,6 +2,7 @@
 
 import asyncio
 from io import StringIO
+from types import SimpleNamespace
 import json
 from unittest.mock import MagicMock, patch
 
@@ -10,7 +11,7 @@ from fastmcp import Client
 
 from openrct2_mcp import mcp_server as server
 from openrct2_mcp.api_client import APIError
-from openrct2_mcp.metrics import summarize_metrics
+from openrct2_mcp.metrics import ResultMiddleware, summarize_metrics
 
 
 @pytest.fixture
@@ -26,7 +27,25 @@ def api():
     return api
 
 
-def test_metrics_distinguish_queries_partial_builds_and_removals_without_contents(tmp_path, api, monkeypatch):
+@pytest.fixture
+def application(api):
+    middleware = ResultMiddleware()
+    return SimpleNamespace(mcp=server.create_server(api, middleware), result_middleware=middleware)
+
+
+@pytest.fixture
+def cli(api, application, monkeypatch):
+    def make_api(**kwargs):
+        api.port = kwargs['port']
+        return api
+
+    monkeypatch.setattr(server, 'OpenRCT2API', make_api)
+    monkeypatch.setattr(server, 'ResultMiddleware', lambda: application.result_middleware)
+    monkeypatch.setattr(server, 'create_server', lambda *args: application.mcp)
+    return application
+
+
+def test_metrics_distinguish_queries_partial_builds_and_removals_without_contents(tmp_path, api, monkeypatch, application):
     sink = StringIO()
     api.place_path_tile.return_value = {'observed_after': {'paths': []}}
     api.place_station_building.return_value = {'ride_id': 7, 'observed_after': {}}
@@ -36,7 +55,7 @@ def test_metrics_distinguish_queries_partial_builds_and_removals_without_content
     ]
 
     async def run():
-        async with Client(server.mcp) as client:
+        async with Client(application.mcp) as client:
             query = await client.call_tool('check_track_segment', {'ride_id': 7, 'track_type': 'Flat'})
             assert json.loads(query.content[0].text)['placeable'] is False
             built = await client.call_tool('place_track_sequence', {
@@ -62,10 +81,9 @@ def test_metrics_distinguish_queries_partial_builds_and_removals_without_content
                 'ride_id': 7, 'building': 'entrance', 'x': 10, 'y': 19, 'direction': 1,
             })
 
-    monkeypatch.setattr(server.result_middleware, 'sink', sink)
-    with patch.object(server, 'api_client', api):
-        asyncio.run(run())
-        server.result_middleware.finish_capture()
+    monkeypatch.setattr(application.result_middleware, 'sink', sink)
+    asyncio.run(run())
+    application.result_middleware.finish_capture()
     path = tmp_path / 'metrics.jsonl'
     path.write_text(sink.getvalue())
 
@@ -88,33 +106,31 @@ def test_metrics_distinguish_queries_partial_builds_and_removals_without_content
     assert 'Obstructed' not in sink.getvalue()
 
 
-def test_metrics_write_failure_does_not_hide_confirmed_mutation(api, monkeypatch):
+def test_metrics_write_failure_does_not_hide_confirmed_mutation(api, monkeypatch, application):
     sink = StringIO()
     sink.close()
 
     async def run():
-        async with Client(server.mcp) as client:
+        async with Client(application.mcp) as client:
             result = await client.call_tool('close_ride', {'ride_id': 7})
             assert result.structured_content['operation_outcome'] == 'confirmed'
             assert not result.is_error
 
-    monkeypatch.setattr(server.result_middleware, 'sink', sink)
-    with patch.object(server, 'api_client', api):
-        asyncio.run(run())
-        assert server.result_middleware.sink is None
+    monkeypatch.setattr(application.result_middleware, 'sink', sink)
+    asyncio.run(run())
+    assert application.result_middleware.sink is None
 
 
-def test_validation_error_metrics_do_not_mask_the_original_error(api, monkeypatch):
+def test_validation_error_metrics_do_not_mask_the_original_error(api, monkeypatch, application):
     sink = StringIO()
 
     async def run():
-        async with Client(server.mcp) as client:
+        async with Client(application.mcp) as client:
             result = await client.call_tool('place_track_sequence', {'ride_id': 7, 'segments': None}, raise_on_error=False)
             assert result.is_error
 
-    monkeypatch.setattr(server.result_middleware, 'sink', sink)
-    with patch.object(server, 'api_client', api):
-        asyncio.run(run())
+    monkeypatch.setattr(application.result_middleware, 'sink', sink)
+    asyncio.run(run())
 
     event = json.loads(sink.getvalue())
     assert event['tool_success'] is False
@@ -133,10 +149,10 @@ def test_metrics_require_a_complete_versioned_run(tmp_path, contents):
         summarize_metrics(path)
 
 
-def test_metrics_startup_never_overwrites_an_existing_run(tmp_path):
+def test_metrics_startup_never_overwrites_an_existing_run(tmp_path, cli):
     path = tmp_path / 'metrics.jsonl'
     path.write_text('previous run')
-    with patch('sys.argv', ['openrct2-mcp', '--metrics-file', str(path)]), patch.object(server.mcp, 'run') as run:
+    with patch('sys.argv', ['openrct2-mcp', '--metrics-file', str(path)]), patch.object(cli.mcp, 'run') as run:
         with pytest.raises(SystemExit) as error:
             server.main()
 
@@ -145,25 +161,29 @@ def test_metrics_startup_never_overwrites_an_existing_run(tmp_path):
     run.assert_not_called()
 
 
-def test_server_configures_local_port_and_closes_metrics_and_connection(tmp_path, api):
+def test_server_configures_local_port_and_closes_metrics_and_connection(tmp_path, api, cli):
     path = tmp_path / 'metrics.jsonl'
     observed = []
 
     def serve():
+        async def run():
+            async with Client(cli.mcp) as client:
+                await client.list_tools()
+        asyncio.run(run())
         observed.append(api.port)
-        assert server.result_middleware.sink is not None
+        assert cli.result_middleware.sink is not None
 
     with patch('sys.argv', ['openrct2-mcp', '--port', '12345', '--metrics-file', str(path)]), \
-         patch.object(server, 'api_client', api), patch.object(server.mcp, 'run', side_effect=serve):
+         patch.object(cli.mcp, 'run', side_effect=serve):
         server.main()
 
     assert observed == [12345]
     assert json.loads(path.read_text()) == {'schema_version': 1, 'kind': 'capture_end', 'tool_calls': 0}
-    assert server.result_middleware.sink is None
+    assert cli.result_middleware.sink is None
     api.close.assert_called_once_with()
 
 
-def test_failed_capture_leaves_a_prefix_that_requires_explicit_incomplete_consent(tmp_path, api, monkeypatch):
+def test_failed_capture_leaves_a_prefix_that_requires_explicit_incomplete_consent(tmp_path, api, monkeypatch, application):
     class FailingAfterFirstWrite(StringIO):
         def write(self, value):
             if self.tell():
@@ -171,16 +191,15 @@ def test_failed_capture_leaves_a_prefix_that_requires_explicit_incomplete_consen
             return super().write(value)
 
     sink = FailingAfterFirstWrite()
-    monkeypatch.setattr(server.result_middleware, 'sink', sink)
-    with patch.object(server, 'api_client', api):
-        async def run():
-            async with Client(server.mcp) as client:
-                first = await client.call_tool('close_ride', {'ride_id': 7})
-                second = await client.call_tool('close_ride', {'ride_id': 7})
-                return first.structured_content, second.structured_content
+    monkeypatch.setattr(application.result_middleware, 'sink', sink)
+    async def run():
+        async with Client(application.mcp) as client:
+            first = await client.call_tool('close_ride', {'ride_id': 7})
+            second = await client.call_tool('close_ride', {'ride_id': 7})
+            return first.structured_content, second.structured_content
 
-        first, second = asyncio.run(run())
-        server.result_middleware.finish_capture()
+    first, second = asyncio.run(run())
+    application.result_middleware.finish_capture()
     path = tmp_path / 'partial.jsonl'
     path.write_text(sink.getvalue())
 
@@ -206,15 +225,14 @@ def test_metrics_reject_mismatched_counts_or_records_after_completion(tmp_path, 
 
 
 @pytest.mark.parametrize('error_type', [KeyboardInterrupt, RuntimeError])
-def test_interrupted_server_never_certifies_its_metrics_capture(tmp_path, error_type):
+def test_interrupted_server_never_certifies_its_metrics_capture(tmp_path, error_type, cli, api):
     path = tmp_path / 'interrupted.jsonl'
-    api = MagicMock()
     with patch('sys.argv', ['openrct2-mcp', '--metrics-file', str(path)]), \
-         patch.object(server, 'api_client', api), patch.object(server.mcp, 'run', side_effect=error_type):
+         patch.object(cli.mcp, 'run', side_effect=error_type):
         with pytest.raises(error_type):
             server.main()
 
-    api.close.assert_called_once()
-    assert server.result_middleware.sink is None
+    api.close.assert_not_called()
+    assert cli.result_middleware.sink is None
     with pytest.raises(ValueError, match='not finalized'):
         summarize_metrics(path)

@@ -75,8 +75,9 @@ image-free output for routine construction when a full view is unnecessary.
 - `candidate_status` explains unavailable candidates or circuit completion.
   An empty list may mean unsupported geometry, not that nothing can connect.
 - `layout_status: disconnected`, `ambiguous`, or `truncated` blocks implicit
-  editing. Arbitrary disconnected layouts and endpoint selection are not
-  supported. Resolve these in-game before continuing.
+  editing. Curated appending cannot handle disconnected layouts or arbitrary endpoint selection.
+  Use get_ride_layout / remove_track_piece only for explicit authorized removal;
+  these tools do not automatically repair or reconnect the layout.
 - `track_elements` and the text grid show actual element base heights, **not
   collision clearance**. Multiple heights on one tile are separated by `/`.
   Image lines are approximate. Images are bounded and large grids are omitted.
@@ -191,12 +192,44 @@ Ratings use the game's decimal scale (for example 6.52). Train velocities are
 raw game values, not mph or km/h. `set_ride_vehicles` requests train/car counts;
 the game may limit them. Instantiated car counts are reported in ride stats.
 
+## Ride settings
+
+`set_ride_name` renames through the normal game action and reads back the name.
+`set_ride_inspection_interval` accepts named intervals from `every_10_minutes`
+through `every_2_hours`, or `never`; `never` also clears the due-inspection flag.
+It does not hire mechanics. `set_ride_minimum_waiting_time` and
+`set_ride_maximum_waiting_time` accept 0–250 seconds and return both bounds: the
+game may adjust the other bound to preserve minimum <= maximum. These stored
+times do not enable loading/departure rules.
+
+Use `get_ride_operating_settings` to discover current settings and nominal lift-speed
+bounds. `set_ride_lift_hill_speed` uses mph and invalidates old ratings when changed.
+`set_ride_circuit_count` accepts 1–20; its response is an acknowledged request,
+not count readback (the scripting API has no getter). Multiple circuits reject
+with cable lifts. Changing the count invalidates ratings.
+
+`set_ride_operating_mode` is different: the engine requires a closed/non-broken
+ride and checks mode support. Even setting the current mode resets construction
+state, clears vehicles, removes riders and invalidates ratings. Inspect before
+using it; do not use it as a blind recovery step.
+
+`get_ride_maintenance_status` observes reliability/downtime, inspection and
+breakdown/crash flags without dispatching mechanics or repairing anything.
+`get_loaded_music_objects` discovers music indices for `set_ride_music_style`.
+Style changes reset the tune but do not enable music; `set_ride_music_enabled`
+controls the flag. Readback does not prove audible playback.
+
+Name, inspection, waiting-time and music settings do not close/reset the ride. Check both
+acknowledgement and `readback_matches_request`; confirmed but unavailable or
+mismatching readback is not verified success. Never blindly retry unknown
+outcomes. Settings do not change track or establish guest operation.
+
 ## Guest operation and checkpoints
 
 Testing is not guest operation. Discover modern path objects with `get_path_objects`
 and inspect paths with `get_path_area` and `get_ride_station_access`. Use
-`place_path_tile` or `place_path_sequence` only for authorized flat, dry ground-level routes.
-A path sequence takes 1–256 caller-chosen `{x, y, z}` tiles, sharing surface,
+`place_path_tile` or `place_path_sequence` for authorized flat, elevated or sloped routes.
+A path sequence takes 1–256 caller-chosen `{x, y, z, slope_direction?}` tiles, sharing surface,
 railings and queue flag. It does not choose routes or require adjacency. It
 stops on failure or unavailable readback without rollback: retain `placed_count`,
 `placements` and `failed_index`, and inspect before retrying unknown outcomes.
@@ -204,8 +237,8 @@ stops on failure or unavailable readback without rollback: retain `placed_count`
 and scenery cannot be replaced or cleared; overhead track still requires game
 clearance. The game updates neighbor edges and queue assignments. These effects
 can extend beyond returned observations. For authorized removal, pass the exact
-current observation to `remove_path_tile`; slopes, ghosts and path additions are
-not supported for removal. A matching observation is not a reservation.
+current observation to `remove_path_tile`; sloped/elevated paths are supported,
+but ghosts and path additions are not. A matching observation is not a reservation.
 
 Use `open_ride` for normal opening, then observe `get_ride_guest_report`. Customer
 completion interpretation is validated only for wooden coasters on OpenRCT2
@@ -237,12 +270,49 @@ fortnight, with an hourly estimate of `x16`. `total_profit_raw` is a lifetime
 counter; lifetime gross revenue is unavailable. Null fields do not mean zero,
 and a few paid guests do not establish sustained profitability.
 
+## Broader park tools
+
+The server also exposes reviewed generated ride appearance/operation, park,
+staff/guest, scenery and terrain primitives. Use the tool schemas and
+[API coverage audit](../../docs/api-coverage.md), not arbitrary SDK property writes.
+`create_unbuilt_ride` creates only a record, unlike station-building `create_ride`.
+Generated `_game` coordinates are raw units (32/tile, Z=8/height unit); curated
+coaster/path coordinates stay in tiles/height units. Patrol reads use tile indices.
+Brake speed edits accept reviewed speed-setting types and encoded 0–30 values
+(odd values round down), not arbitrary track IDs. Read back the actual element.
+Water height zero is invalid; a valid height at/below land base removes water.
+Pause toggles; ordinary speeds are 1–4. Editor ownership/entrance/spawn setup,
+map resizing, raw guest-behaviour flags and debug speeds are excluded. Take a
+file-verified checkpoint before destructive changes. These primitives do not
+establish ride support, clearance, guest access, profitability or objective success.
+
 ## Current limits
 
-Ride-specific availability remains unknown. Diagonals, inversions, arbitrary
-endpoint selection, multiple-station operation, sloped/elevated path construction
-and general public-network pathfinding are not supported by this workflow. Keep design decisions with the agent. Normal
+Normal ride-type track groups are checked, but complete vehicle sprite compatibility remains unknown. Diagonals, inversions, arbitrary
+endpoint insertion, multiple-station operation and general public-network pathfinding are not supported by this workflow. Keep design decisions with the agent. Normal
 revision of track created for the current task is part of building, unless the
 user limits it. Preserve pre-existing work and any protected track prefixes.
 Ask before deleting pre-existing rides, discarding pre-existing park work, or
 resetting the park.
+
+
+## Other ride construction
+
+Use `get_ride_build_options` to discover normal starting pieces, loaded/invented
+objects and `footprint_supported`. For supported flat rides, shops and facilities,
+use `create_unbuilt_ride`, then `place_ride_footprint` on the empty closed ride.
+Use `get_ride_layout.connection_directions` for outward footprint connection sides.
+`place_station_building` supports valid flat footprint edges and adjacent maze tiles;
+shops/facilities use service paths instead. Maze type 20 uses `edit_maze_cell` with
+caller-chosen half-tile coordinates and an expected current maze mask, not coaster
+append tools. Read the tool contracts for build versus fill coordinates.
+
+For paths, Z is the lower end and optional `slope_direction` points uphill (0 west,
+1 +y, 2 east, 3 -y). A slope rises 2 height units; omit it for flat paths. Native
+terrain, ownership, support and clearance checks apply. Existing paths at the same
+base height and local scenery cannot be replaced. No routing is performed.
+
+These workflows preserve separate construction, operation, customer and persistence
+evidence. A carousel can operate with zero reported velocity. Do not apply coaster
+closed-circuit/movement readiness assumptions to flat rides, mazes or shops.
+See [player capabilities](../../docs/player-capabilities.md) for evidence and gaps.

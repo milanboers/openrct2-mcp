@@ -1,17 +1,18 @@
 """Ride financial observations and normal, explicitly scoped price actions."""
 
-from typing import Annotated, Any, Callable, Literal
+from typing import Annotated, Any, Callable
 
 from fastmcp import FastMCP
-from pydantic import Field
+from pydantic import Field, StrictBool
 
 from .api_client import APIError, OpenRCT2API
+from .models import RideId
 from .results import mutation_failure, mutation_status
 
 
 def register_finance_tools(mcp: FastMCP, get_api: Callable[[], OpenRCT2API]) -> None:
     @mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': False})
-    def get_ride_finances(ride_id: Annotated[int, Field(ge=0)]) -> dict[str, Any]:
+    def get_ride_finances(ride_id: RideId) -> dict[str, Any]:
         """Inspect stored/effective prices, charging rules and ride accounting.
 
         Money is raw engine units: 10 per GBP, not cents; display currency conversion
@@ -30,9 +31,9 @@ def register_finance_tools(mcp: FastMCP, get_api: Callable[[], OpenRCT2API]) -> 
 
     @mcp.tool(annotations={'openWorldHint': False})
     def set_ride_price(
-        ride_id: Annotated[int, Field(ge=0)], price_raw: Annotated[int, Field(ge=0, le=200)],
-        expected_price_raw: Annotated[int, Field(ge=0)], price_index: Literal[0, 1] = 0,
-        allow_shared_price_changes: bool = False,
+        ride_id: RideId, price_raw: Annotated[int, Field(strict=True, ge=0, le=200)],
+        expected_price_raw: Annotated[int, Field(strict=True, ge=0)], price_index: Annotated[int, Field(strict=True, ge=0, le=1)] = 0,
+        allow_shared_price_changes: StrictBool = False,
     ) -> dict[str, Any]:
         """Set an active price through the game's normal action and read it back.
 

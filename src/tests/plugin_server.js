@@ -27,6 +27,7 @@ function makeTrack(tileX, tileY, trackType, direction, baseZ) {
     return {
         type: "track",
         trackType,
+        sequence: 0, isGhost: false,
         station: [1, 2, 3].includes(trackType) ? 0 : null,
         direction,
         baseZ,
@@ -128,7 +129,10 @@ actionHandlers["ridecreate"] = (args, cb) => {
     ridesList.push({ id: nextRideId, name: "Ride " + nextRideId, type: args.rideType, status: "closed",
         stations: [], vehicles: [], excitement: -1, totalCustomers: 0, guestCount: 0,
         classification: "ride", object: { shopItem: 255 }, price: [10], runningCost: 4,
-        incomePerHour: 0, profit: -64, totalProfit: 0 });
+        incomePerHour: 0, profit: -64, totalProfit: 0,
+        inspectionInterval: 2, minimumWaitingTime: 10, maximumWaitingTime: 60,
+        flags: 0, mode: 1, departFlags: 0, liftHillSpeed: 5, minLiftHillSpeed: 3, maxLiftHillSpeed: 20,
+        music: 0, reliability: 100, downtime: 0, age: 0 });
     cb({ ride: nextRideId });
 };
 
@@ -168,7 +172,7 @@ actionHandlers["trackplace"] = (args, cb) => {
     const tileX = Math.floor(args.x / 32);
     const tileY = Math.floor(args.y / 32);
     // The installed-server TCP fixture has one obstruction to exercise partial outcomes.
-    if (process.argv.includes("--tcp") && tileX === 64 && tileY === 66) {
+    if (process.argv.includes("--obstruction") && tileX === 64 && tileY === 66) {
         cb({ error: 9, errorTitle: "Cannot build", errorMessage: "Stub obstruction" });
         return;
     }
@@ -225,6 +229,25 @@ actionHandlers["ridesetname"] = (args, cb) => {
     cb({});
 };
 
+actionHandlers["ridesetsetting"] = (args, cb) => {
+    const ride = map.getRide(args.ride);
+    if (args.setting === 0) { ride.mode = args.value; ride.vehicles = []; }
+    if (args.setting === 5) ride.inspectionInterval = args.value;
+    if (args.setting === 6) ride.flags = args.value ? ride.flags | 8192 : ride.flags & ~8192;
+    if (args.setting === 7) ride.music = args.value;
+    if (args.setting === 8) ride.liftHillSpeed = args.value;
+    if (args.setting === 2) {
+        ride.minimumWaitingTime = args.value;
+        ride.maximumWaitingTime = Math.max(ride.maximumWaitingTime, args.value);
+    }
+    if (args.setting === 3) {
+        ride.maximumWaitingTime = args.value;
+        ride.minimumWaitingTime = Math.min(ride.minimumWaitingTime, args.value);
+    }
+    cb({});
+};
+actionHandlers["ridesetvehicle"] = (args, cb) => cb({});
+
 actionHandlers["ridedemolish"] = (args, cb) => {
     for (let i = ridesList.length - 1; i >= 0; i--) {
         if (ridesList[i].id === args.ride) {
@@ -280,14 +303,14 @@ global.context = {
         { index: 0, identifier: "test.surface", name: "Test path", flags: 0 }
     ] : type === "footpath_railings" ? [
         { index: 0, identifier: "test.railings", name: "Test railings" }
-    ] : [{ index: 0, identifier: "rct2.ride.ptct1", name: "Wooden", rideType: [52],
+    ] : type === "music" ? [{ index: 0, identifier: "rct2.music.gentle", name: "Gentle" }] : [{ index: 0, identifier: "rct2.ride.ptct1", name: "Wooden", rideType: [52],
         minCarsInTrain: 1, maxCarsInTrain: 7 }],
     saveGame: () => {},
     getAllTrackSegments: () => [
-        { type: 0, endX: 0, endY: 0, endZ: 0, beginDirection: 0, endDirection: 0, beginSlope: 0, endSlope: 0, beginBank: 0, endBank: 0, elements: [{ x: 0, y: 0, z: 0 }] },
-        { type: 1, endX: 0, endY: 0, endZ: 0, beginDirection: 0, endDirection: 0, beginSlope: 0, endSlope: 0, beginBank: 0, endBank: 0, elements: [{ x: 0, y: 0, z: 0 }] },
-        { type: 2, endX: 0, endY: 0, endZ: 0, beginDirection: 0, endDirection: 0, beginSlope: 0, endSlope: 0, beginBank: 0, endBank: 0, elements: [{ x: 0, y: 0, z: 0 }] },
-        { type: 3, endX: 0, endY: 0, endZ: 0, beginDirection: 0, endDirection: 0, beginSlope: 0, endSlope: 0, beginBank: 0, endBank: 0, elements: [{ x: 0, y: 0, z: 0 }] },
+        { type: 0, trackGroup: 1, allowsChainLift: false, endX: 0, endY: 0, endZ: 0, beginDirection: 0, endDirection: 0, beginSlope: 0, endSlope: 0, beginBank: 0, endBank: 0, elements: [{ x: 0, y: 0, z: 0 }] },
+        { type: 1, trackGroup: 2, allowsChainLift: false, endX: 0, endY: 0, endZ: 0, beginDirection: 0, endDirection: 0, beginSlope: 0, endSlope: 0, beginBank: 0, endBank: 0, elements: [{ x: 0, y: 0, z: 0 }] },
+        { type: 2, trackGroup: 2, allowsChainLift: false, endX: 0, endY: 0, endZ: 0, beginDirection: 0, endDirection: 0, beginSlope: 0, endSlope: 0, beginBank: 0, endBank: 0, elements: [{ x: 0, y: 0, z: 0 }] },
+        { type: 3, trackGroup: 2, allowsChainLift: false, endX: 0, endY: 0, endZ: 0, beginDirection: 0, endDirection: 0, beginSlope: 0, endSlope: 0, beginBank: 0, endBank: 0, elements: [{ x: 0, y: 0, z: 0 }] },
     ],
     queryAction: (name, args, cb) => cb({ cost: 100 }),
     executeAction: (name, args, cb) => {

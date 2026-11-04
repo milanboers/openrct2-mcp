@@ -1,4 +1,4 @@
-"""Flat-path, guest observation and checkpoint contracts through MCP."""
+"""Path, guest observation and checkpoint contracts through MCP."""
 
 import asyncio
 import re
@@ -7,6 +7,7 @@ from unittest.mock import Mock
 from fastmcp import Client, FastMCP
 import pytest
 
+from openrct2_mcp._action_tools import register_action_tools
 from openrct2_mcp.api_client import APIError, OpenRCT2API
 from openrct2_mcp.client_helpers import call_object
 from openrct2_mcp.park_tools import register_park_tools
@@ -18,6 +19,7 @@ def tools():
     report = Mock()
     mcp = FastMCP('Park tool contract')
     register_park_tools(mcp, lambda: api, report)
+    register_action_tools(mcp, lambda: api)
     return mcp, api, report
 
 
@@ -34,7 +36,7 @@ def test_path_operations_and_opening_preserve_observations_and_action_outcomes(t
             objects = await call_object(client, 'get_path_objects')
             area = await call_object(client, 'get_path_area', x=10, y=20, radius=1)
             placed = await call_object(client, 'place_path_tile', x=10, y=20, z=14,
-                                       surface_object=2, railings_object=3, is_queue=True)
+                                       surface_object=2, railings_object=3, is_queue=True, slope_direction=None)
             removed = await call_object(client, 'remove_path_tile', x=10, y=20, z=14,
                                         expected_path=area['paths'][0])
             opened = await call_object(client, 'open_ride', ride_id=7)
@@ -48,7 +50,7 @@ def test_path_operations_and_opening_preserve_observations_and_action_outcomes(t
     assert placed['operation_outcome'] == removed['operation_outcome'] == opened['operation_outcome'] == 'confirmed'
     assert placed['state_status'] == removed['state_status'] == 'available'
     assert removed['cost_raw'] == -50
-    api.place_path_tile.assert_called_once_with(x=10, y=20, z=14, surface_object=2, railings_object=3, is_queue=True)
+    api.place_path_tile.assert_called_once_with(x=10, y=20, z=14, surface_object=2, railings_object=3, is_queue=True, slope_direction=None)
     api.remove_path_tile.assert_called_once_with(x=10, y=20, z=14, expected_path=observed['paths'][0])
     api.open_ride.assert_called_once_with(7)
 
@@ -172,10 +174,10 @@ def test_path_sequence_retains_tiles_costs_and_last_observation(tools):
     assert result['placed_count'] == 3
     assert result['execution_status'] == 'completed'
     assert result['state_status'] == 'available'
-    assert result['placements'] == [{'index': index, **tile, 'cost_raw': 100} for index, tile in enumerate(tiles)]
+    assert result['placements'] == [{'index': index, **tile, 'slope_direction': None, 'cost_raw': 100} for index, tile in enumerate(tiles)]
     assert result['last_placement']['observed_after'] == {'x': 12, 'paths': []}
     assert [call.kwargs for call in api.place_path_tile.call_args_list] == [
-        {**tile, 'surface_object': 2, 'railings_object': 3, 'is_queue': True} for tile in tiles
+        {**tile, 'slope_direction': None, 'surface_object': 2, 'railings_object': 3, 'is_queue': True} for tile in tiles
     ]
 
 
