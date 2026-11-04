@@ -26,6 +26,20 @@ def test_generated_actions_are_current():
     subprocess.run([sys.executable, str(ROOT / 'scripts/generate_actions.py'), '--check'], check=True)
 
 
+def test_inventory_renders_multiline_descriptions_as_wrapping_list_items():
+    descriptions = {
+        'set_wait': 'Set the waiting time.\n\nThe game may adjust both bounds.',
+        'choose_mode': 'Choose A | B\nwith\tspaces. More details.',
+    }
+
+    inventory = generator.inventory_source(descriptions)
+
+    assert inventory == (
+        '- `choose_mode` — Choose A | B with spaces.\n'
+        '- `set_wait` — Set the waiting time.\n'
+    )
+
+
 @pytest.mark.parametrize('invalid', ['duplicate', 'unknown_field', 'bad_mapping', 'missing_readback'])
 def test_registry_rejects_invalid_definitions(tmp_path, invalid):
     definition = json.loads((ROOT / 'src/openrct2_mcp/actions.json').read_text())

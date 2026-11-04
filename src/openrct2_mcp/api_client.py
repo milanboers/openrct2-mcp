@@ -1,4 +1,4 @@
-"""TCP client for communicating with OpenRCT2 Ride Creation API using persistent connections."""
+"""TCP client for communicating with the OpenRCT2 MCP Bridge using persistent connections."""
 
 import io
 import json
@@ -24,7 +24,7 @@ class APIError(Exception):
 
 
 class OpenRCT2API(ActionClient):
-    """Persistent TCP client for OpenRCT2 Ride Creation API."""
+    """Persistent TCP client for the OpenRCT2 MCP Bridge."""
 
     DEFAULT_HOST = "localhost"
     DEFAULT_PORT = 8080

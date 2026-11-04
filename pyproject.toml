@@ -3,9 +3,9 @@ requires = ["hatchling", "pydantic>=2.13.5,<3"]
 build-backend = "hatchling.build"
 
 [project]
-name = "openrct2-ridecreation-mcp"
+name = "openrct2-mcp"
 version = "0.1.0"
-description = "MCP server for roller coaster creation in OpenRCT2"
+description = "MCP tools for OpenRCT2 construction and park management"
 requires-python = ">=3.10"
 dependencies = [
     "fastmcp>=4.0.3,<5",
@@ -47,7 +47,7 @@ include = [
     "/docs",
     "/skills",
     "/scenarios",
-    "/ridecreation-api.js",
+    "/openrct2-mcp.js",
     "/README.md",
     "/LICENSE",
     "/pyproject.toml",

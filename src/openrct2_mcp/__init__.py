@@ -1,1 +1,1 @@
-"""OpenRCT2 ride construction MCP server."""
+"""OpenRCT2 construction and park management MCP server."""

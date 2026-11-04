@@ -1,6 +1,6 @@
 ---
 name: build-coaster
-description: Build, inspect, edit and test roller coasters in OpenRCT2 through the Ride Creation MCP server.
+description: Build, inspect, edit and test roller coasters in OpenRCT2 through the OpenRCT2 MCP server.
 ---
 
 # OpenRCT2 Coaster Builder

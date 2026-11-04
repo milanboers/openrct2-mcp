@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def checkout(tmp_path):
     root = tmp_path / 'checkout'
     root.mkdir()
-    for name in ('pyproject.toml', 'uv.lock', 'hatch_build.py', 'ridecreation-api.js', 'README.md'):
+    for name in ('pyproject.toml', 'uv.lock', 'hatch_build.py', 'openrct2-mcp.js', 'README.md'):
         shutil.copy2(ROOT / name, root / name)
     shutil.copytree(ROOT / 'src/openrct2_mcp', root / 'src/openrct2_mcp', ignore=shutil.ignore_patterns('__pycache__'))
     (root / 'scripts').mkdir()
@@ -44,13 +44,15 @@ def test_package_build_refreshes_stale_generated_files(checkout, tmp_path, targe
     if target == 'wheel':
         with zipfile.ZipFile(next((tmp_path / 'dist').glob('*.whl'))) as archive:
             generated = archive.read('openrct2_mcp/_action_tools.py').decode()
+            metadata = archive.read(next(name for name in archive.namelist() if name.endswith('/METADATA'))).decode()
+            assert '\nName: openrct2-mcp\n' in metadata
     else:
         with tarfile.open(next((tmp_path / 'dist').glob('*.tar.gz'))) as archive:
             generated = archive.extractfile(next(m for m in archive.getmembers() if m.name.endswith('/' + tools))).read().decode()
-            plugin = archive.extractfile(next(m for m in archive.getmembers() if m.name.endswith('/ridecreation-api.js'))).read().decode()
+            plugin = archive.extractfile(next(m for m in archive.getmembers() if m.name.endswith('/openrct2-mcp.js'))).read().decode()
             assert 'Automatically rebuilt plugin table' in plugin
     assert 'Automatically rebuilt description' in generated
-    assert 'Automatically rebuilt plugin table' in (checkout / 'ridecreation-api.js').read_text()
+    assert 'Automatically rebuilt plugin table' in (checkout / 'openrct2-mcp.js').read_text()
     assert 'class ActionClient' in (checkout / 'src/openrct2_mcp/_action_client.py').read_text()
 
 
@@ -61,7 +63,7 @@ def test_plugin_install_refreshes_stale_table_and_preserves_overwrite_guard(chec
 
     subprocess.run(command, check=True, capture_output=True, text=True)
 
-    destination = user / 'plugin/ridecreation-api.js'
+    destination = user / 'plugin/openrct2-mcp.js'
     assert 'Automatically rebuilt plugin table' in destination.read_text()
     destination.write_text('existing park plugin')
     result = subprocess.run(command, capture_output=True, text=True)

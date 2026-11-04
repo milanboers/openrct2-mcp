@@ -16,7 +16,7 @@ spec.loader.exec_module(checker)
 @pytest.fixture
 def archives(tmp_path):
     files = [
-        'hatch_build.py', 'pyproject.toml', 'uv.lock', 'ridecreation-api.js', 'skills/build-coaster/SKILL.md',
+        'hatch_build.py', 'pyproject.toml', 'uv.lock', 'openrct2-mcp.js', 'skills/build-coaster/SKILL.md',
         'docs/reference.md', 'scenarios/sandbox.park', 'scenarios/guest-coaster.json',
         'scripts/smoke_test.py', 'scripts/guest_smoke_test.py', 'scripts/check_ready.py',
         'src/tests/plugin_server.js', 'src/openrct2_mcp/mcp_server.py',
@@ -52,10 +52,10 @@ def test_wheel_rejects_source_tree_or_tests(archives, extra):
 def test_source_distribution_requires_the_game_plugin(archives):
     sdist, wheel = archives
     with tarfile.open(sdist) as archive:
-        members = [member for member in archive.getmembers() if not member.name.endswith('/ridecreation-api.js')]
+        members = [member for member in archive.getmembers() if not member.name.endswith('/openrct2-mcp.js')]
     with tarfile.open(sdist, 'w:gz') as archive:
         for member in members:
             archive.addfile(member)
 
-    with pytest.raises(RuntimeError, match='ridecreation-api.js'):
+    with pytest.raises(RuntimeError, match='openrct2-mcp.js'):
         checker.check_archives(sdist, wheel)

@@ -9116,7 +9116,7 @@ function main() {
 
 // Register the plugin
 registerPlugin({
-    name: "Ride Creation API Plugin - modified",
+    name: "OpenRCT2 MCP Bridge",
     version: PLUGIN_VERSION,
     authors: ["Markus", "Milan Boers"],
     type: "intransient",

@@ -1,1 +1,1 @@
-# Tests package for OpenRCT2 Ride Creation MCP server
+# Tests package for OpenRCT2 MCP server

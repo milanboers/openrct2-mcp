@@ -38,7 +38,7 @@ def check_archives(sdist: Path, wheel: Path) -> None:
     with tarfile.open(sdist) as archive:
         files = {name.split('/', 1)[1] for name in archive.getnames() if '/' in name}
     required = {
-        'hatch_build.py', 'pyproject.toml', 'uv.lock', 'ridecreation-api.js', 'skills/build-coaster/SKILL.md',
+        'hatch_build.py', 'pyproject.toml', 'uv.lock', 'openrct2-mcp.js', 'skills/build-coaster/SKILL.md',
         'docs/reference.md', 'scenarios/sandbox.park', 'scenarios/guest-coaster.json',
         'scripts/smoke_test.py', 'scripts/guest_smoke_test.py', 'scripts/check_ready.py',
         'src/tests/plugin_server.js', 'src/openrct2_mcp/mcp_server.py',
@@ -62,7 +62,7 @@ def extract_plugin_fixture(sdist: Path, destination: Path) -> Path:
     # Copy only fixed paths, not arbitrary archive member names.
     with tarfile.open(sdist) as archive:
         members = {member.name.split('/', 1)[1]: member for member in archive.getmembers() if '/' in member.name}
-        for relative in ('ridecreation-api.js', 'src/tests/plugin_server.js'):
+        for relative in ('openrct2-mcp.js', 'src/tests/plugin_server.js'):
             source = archive.extractfile(members[relative])
             if source is None:
                 raise RuntimeError(f'Source archive has no file content for {relative}')

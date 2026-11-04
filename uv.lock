@@ -797,7 +797,7 @@ wheels = [
 ]
 
 [[package]]
-name = "openrct2-ridecreation-mcp"
+name = "openrct2-mcp"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

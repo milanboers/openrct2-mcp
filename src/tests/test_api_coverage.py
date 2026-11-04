@@ -57,7 +57,7 @@ async def test_readme_inventory_matches_all_discoverable_tools():
     async with Client(mcp) as client:
         tools = {tool.name for tool in await client.list_tools()}
 
-    rows = re.findall(r'^\| `(\w+)` \|', (ROOT / 'README.md').read_text(), re.M)
+    rows = re.findall(r'^- `(\w+)` — ', (ROOT / 'README.md').read_text(), re.M)
 
     assert len(rows) == len(set(rows))
     assert set(rows) == tools == custom.keys() | {o['name'] for o in operations}

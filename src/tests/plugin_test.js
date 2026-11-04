@@ -1,7 +1,7 @@
 // Plugin test harness.
 //
 // Stubs the OpenRCT2 plugin API (network, map, context, registerPlugin), loads
-// the real ridecreation-api.js, and drives JSON requests through its TCP
+// the real openrct2-mcp.js, and drives JSON requests through its TCP
 // listener to assert on the request/response contract.
 //
 // Run with: node src/tests/plugin_test.js
@@ -192,8 +192,9 @@ function request(endpoint, params) {
 }
 
 // Load the real plugin and start it.
-const pluginPath = path.join(__dirname, "..", "..", "ridecreation-api.js");
+const pluginPath = path.join(__dirname, "..", "..", "openrct2-mcp.js");
 eval(fs.readFileSync(pluginPath, "utf8"));
+assert(global.__plugin.name === "OpenRCT2 MCP Bridge", "plugin uses the bridge display name");
 global.__plugin.main();
 const connHandler = listener.connectionHandler;
 assert(connHandler != null, "plugin starts and listens");

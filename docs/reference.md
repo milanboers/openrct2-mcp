@@ -1,6 +1,6 @@
 # Detailed setup and tool reference
 
-Build roller coasters in OpenRCT2 with your AI coding assistant. The agent plans the layout, an in-game plugin places the track piece by piece, and the server sends back the ride's state — including a height map and a top-down picture — so the agent can keep designing until the circuit is closed.
+OpenRCT2 MCP exposes construction, park-management actions and game observations to an MCP client. The in-game OpenRCT2 MCP Bridge executes normal game actions. The caller plans layouts and park strategy, then inspects the results.
 
 ![movie-1080p-final](https://github.com/user-attachments/assets/77bf232a-91c0-4205-a3c2-5c0bb3af9896)
 
@@ -8,7 +8,7 @@ Build roller coasters in OpenRCT2 with your AI coding assistant. The agent plans
 
 Three pieces talk to each other:
 
-1. **In-game plugin** (`ridecreation-api.js`) — runs inside OpenRCT2 and opens a small TCP server on port `8080`. It places track through game actions and reports authoritative ride state. Connection-shape filtering, ride-specific support and physical clearance are separate checks (see limitations below).
+1. **In-game plugin** (`openrct2-mcp.js`) — runs inside OpenRCT2 and opens a small TCP server on port `8080`. It performs construction and park-management actions and reports observed game state. Connection-shape filtering, ride-specific support and physical clearance are separate checks (see limitations below).
 2. **MCP server** (Python, this repo) — a plain stdio MCP server. Its tools forward to the game over that TCP connection.
 3. **Your AI client** — Claude Code, Codex, pi, opencode, or any stdio MCP client. It runs the MCP server, loads the `build-coaster` skill, and drives the whole thing.
 
@@ -69,7 +69,7 @@ Python integrations can use `create_server(api)` from `openrct2_mcp.mcp_server` 
 
 ### 1. Copy the plugin into OpenRCT2
 
-Copy `ridecreation-api.js` into your OpenRCT2 `plugin` folder (create the folder if needed):
+Copy `openrct2-mcp.js` into your OpenRCT2 `plugin` folder (create the folder if needed):
 
 | OS | OpenRCT2 user folder |
 | --- | --- |
@@ -78,7 +78,7 @@ Copy `ridecreation-api.js` into your OpenRCT2 `plugin` folder (create the folder
 | Linux | `~/.config/OpenRCT2/` |
 | Linux (Flatpak) | `~/.var/app/io.openrct2.OpenRCT2/config/OpenRCT2/` |
 
-So on macOS the file ends up at `~/Library/Application Support/OpenRCT2/plugin/ridecreation-api.js`.
+So on macOS the file ends up at `~/Library/Application Support/OpenRCT2/plugin/openrct2-mcp.js`.
 
 Alternatively, use the installer with an explicit OpenRCT2 user directory:
 
@@ -86,7 +86,7 @@ Alternatively, use the installer with an explicit OpenRCT2 user directory:
 uv run python scripts/install_plugin.py --user-dir "/path/to/OpenRCT2"
 ```
 
-Pass `--overwrite` to replace an existing copy. The installer does not restart the game. Save your park and restart OpenRCT2 after copying: a running game keeps the old plugin loaded. Then check `get_plugin_info` from your MCP client.
+Pass `--overwrite` to replace an existing copy. For upgrades from `ridecreation-api.js`, it also removes that old filename to avoid loading two TCP listeners. For manual installation, remove the old file yourself. The installer does not restart the game. Save your park and restart OpenRCT2 after copying: a running game keeps the old plugin loaded. Then check `get_plugin_info` from your MCP client.
 
 ### 2. Use the sandbox scenario
 
@@ -522,7 +522,7 @@ Generation runs automatically:
   source files when developing registry changes.
 
 Generated `_action_client.py`, `_action_tools.py` and the marked dispatch table in
-`ridecreation-api.js` stay checked in. Installed servers use those ordinary Python
+`openrct2-mcp.js` stay checked in. Installed servers use those ordinary Python
 signatures, not runtime `exec` or reflection-based tool schemas. No generator runs
 at installed-server startup. Build dependencies include Pydantic for definition
 validation; installed servers do not need Hatchling.
@@ -546,8 +546,8 @@ Restart the game and reload the MCP client after installing a changed plugin.
 The [full API audit](api-coverage.md) classifies all 81 native aliases and 255 SDK
 interfaces, links input DTOs to action decisions, and records exact exclusions.
 The README inventory is generated from the registry plus reviewed custom tool
-summaries; it has one row per discoverable tool. Do not manually add generated
-bindings or inventory rows. `docs/game-api-surface.json` pins source hashes,
+summaries; it has one wrapping list item per discoverable tool. Do not manually
+add generated bindings or inventory entries. `docs/game-api-surface.json` pins source hashes,
 member signatures and native visitor parameters. `docs/game-api-policy.json`
 contains the reviewed scope and reasons. Refreshing upstream source is explicit;
 normal builds need no network or OpenRCT2 installation.
@@ -654,4 +654,4 @@ The final coaster remains in the park. On failure, rides may remain for inspecti
 
 ## Plugin Attribution
 
-The `ridecreation-api.js` plugin is a modified version of the [OpenRCT2 Ride Creation API](https://openrct2plugins.org/plugin/R_kgDONuEl9w/openrct2-ridecreation-api).
+The `openrct2-mcp.js` plugin is a modified version of the [OpenRCT2 Ride Creation API](https://openrct2plugins.org/plugin/R_kgDONuEl9w/openrct2-ridecreation-api).

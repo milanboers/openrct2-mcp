@@ -29,7 +29,7 @@ def _new_server(api: OpenRCT2API, middleware: ResultMiddleware) -> FastMCP:
             api.close()
 
     # FastMCP's default strict=False overrides even explicit Field/model strictness.
-    server = FastMCP("Roller Coaster Creator", lifespan=lifespan, strict_input_validation=True)
+    server = FastMCP("OpenRCT2", lifespan=lifespan, strict_input_validation=True)
     server.add_middleware(middleware)
     return server
 

@@ -17,8 +17,12 @@ def test_servers_keep_clients_independent_and_close_them_at_lifespan_exit():
     first.list_all_rides.return_value = [{'id': 0, 'name': 'First', 'type': 52}]
     second.list_all_rides.return_value = [{'id': 7, 'name': 'Second', 'type': 52}]
 
+    first_server = create_server(first)
+    second_server = create_server(second)
+    assert first_server.name == second_server.name == "OpenRCT2"
+
     async def scenario():
-        async with Client(create_server(first)) as a, Client(create_server(second)) as b:
+        async with Client(first_server) as a, Client(second_server) as b:
             assert (await call_json(a, 'list_all_rides'))[0]['name'] == 'First'
             assert (await call_json(b, 'list_all_rides'))[0]['name'] == 'Second'
             assert {t.name for t in await a.list_tools()} == {t.name for t in await b.list_tools()}

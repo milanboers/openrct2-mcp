@@ -271,9 +271,17 @@ def plugin_source(registry: Registry) -> str:
     return START + '    var rideEntryFlags = ' + flags + ';\n    var rideBuildTypes = ' + json.dumps(build_table, sort_keys=True) + ';\n' + '    var registeredActions = ' + json.dumps(table, indent=4).replace('\n', '\n    ') + ';\n' + END
 
 
+def inventory_source(descriptions: dict[str, str]) -> str:
+    rows = []
+    for name, description in sorted(descriptions.items()):
+        summary = ' '.join(description.split()).partition('. ')[0].rstrip('.') + '.'
+        rows.append(f'- `{name}` — {summary}\n')
+    return ''.join(rows)
+
+
 def generate(check: bool = False) -> bool:
     registry = load_registry()
-    plugin = ROOT / 'ridecreation-api.js'
+    plugin = ROOT / 'openrct2-mcp.js'
     text = plugin.read_text()
     before, tail = text.split(START, 1)
     _, after = tail.split(END, 1)
@@ -283,9 +291,8 @@ def generate(check: bool = False) -> bool:
     descriptions = json.loads((ROOT / 'docs/custom-tools.json').read_text())
     if descriptions.keys() & {op.name for op in registry.operations}:
         raise ValueError('Custom and generated tool names must not overlap')
-    descriptions.update({op.name: op.description.partition('. ')[0].rstrip('.') + '.' for op in registry.operations})
-    table = '| Tool | Purpose |\n| --- | --- |\n' + ''.join(
-        f'| `{name}` | {description} |\n' for name, description in sorted(descriptions.items()))
+    descriptions.update({op.name: op.description for op in registry.operations})
+    table = inventory_source(descriptions)
     outputs = {
         readme: prefix + '<!-- BEGIN GENERATED TOOL INVENTORY -->\n' + table + '<!-- END GENERATED TOOL INVENTORY -->' + suffix,
         PACKAGE / '_action_client.py': client_source(registry),

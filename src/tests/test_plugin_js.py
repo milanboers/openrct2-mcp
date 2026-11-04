@@ -1,4 +1,4 @@
-"""Tests for the OpenRCT2 ride creation plugin (JS), run via node."""
+"""Tests for the OpenRCT2 MCP Bridge plugin (JS), run via node."""
 
 import shutil
 import subprocess
@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 TESTS_DIR = Path(__file__).resolve().parent
-PLUGIN = TESTS_DIR.parent.parent / "ridecreation-api.js"
+PLUGIN = TESTS_DIR.parent.parent / "openrct2-mcp.js"
 
 _has_node = shutil.which("node") is not None
 

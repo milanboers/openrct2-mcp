@@ -1,6 +1,6 @@
 // Integration test server.
 //
-// Loads the real ridecreation-api.js with a stubbed game API and exposes the
+// Loads the real openrct2-mcp.js with a stubbed game API and exposes the
 // plugin's TCP listener over this process's stdio instead of a real socket:
 //   - plugin sends responses via  process.stdout.write  (JSON lines)
 //   - requests arrive on   process.stdin                (raw bytes)
@@ -369,7 +369,7 @@ global.network = {
 // ---------------------------------------------------------------------------
 const fs = require("fs");
 const path = require("path");
-const pluginPath = path.join(__dirname, "..", "..", "ridecreation-api.js");
+const pluginPath = path.join(__dirname, "..", "..", "openrct2-mcp.js");
 eval(fs.readFileSync(pluginPath, "utf8"));
 global.__plugin.main();
 
